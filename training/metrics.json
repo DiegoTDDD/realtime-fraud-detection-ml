@@ -1,0 +1,16 @@
+{
+  "pr_auc": 0.9925184935399247,
+  "threshold": 0.5615719127989475,
+  "precision": 0.9575057736720555,
+  "recall": 0.9655333022822543,
+  "recall_by_fraud_type": {
+    "high_amount": 0.9621621621621622,
+    "card_testing": 1.0,
+    "impossible_travel": 0.6473684210526316
+  },
+  "train_rows": 120000,
+  "test_rows": 30000,
+  "train_fraud_count": 9114,
+  "test_fraud_count": 2147,
+  "scale_pos_weight": 12.166556945358789
+}

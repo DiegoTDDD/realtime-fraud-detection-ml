@@ -1,0 +1,24 @@
+# Data (regenerable, large, or synthetic)
+data/training_raw.parquet
+data/predictions/
+data/_checkpoints/
+
+# Trained model artifact (binary, regenerable via training/train_model.py)
+training/model.joblib
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Conda / venv
+.conda/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

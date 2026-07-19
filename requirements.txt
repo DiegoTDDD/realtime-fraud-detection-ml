@@ -1,0 +1,18 @@
+# Spark Structured Streaming (same version as Project 1, for compatibility with the shared Redpanda topic)
+pyspark==3.5.3
+
+# Model training and evaluation
+scikit-learn==1.5.2
+xgboost==2.1.1
+joblib==1.4.2
+
+# Data handling (same versions as Project 1)
+pandas==2.2.3
+pyarrow==17.0.0
+
+# Plotting for evaluation (PR curve, feature importance)
+matplotlib==3.9.2
+
+# Dashboard (same versions as Project 1)
+streamlit==1.39.0
+plotly==5.24.1
