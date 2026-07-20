@@ -13,6 +13,12 @@ ground-truth fraud labels into every simulated transaction -- most
 real-time fraud dashboards can't show live accuracy, because they don't
 have an oracle to check predictions against.
 
+Local runs read the live data/predictions/ folder written by the scoring
+job. When deployed (e.g. Streamlit Community Cloud, which runs neither
+Spark nor Docker), it falls back to a small versioned sample at
+data/predictions_sample/predictions_sample.parquet -- see
+scoring/export_sample.py.
+
 Run (inside the `fraud-ml` conda env):
     streamlit run dashboard/app.py
 """
@@ -31,6 +37,7 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PREDICTIONS_DIR = os.path.join(PROJECT_ROOT, "data", "predictions")
+SAMPLE_PATH = os.path.join(PROJECT_ROOT, "data", "predictions_sample", "predictions_sample.parquet")
 METRICS_PATH = os.path.join(PROJECT_ROOT, "training", "metrics.json")
 
 ROLLING_WINDOW_MINUTES = 10  # window for "live" precision/recall
@@ -88,21 +95,28 @@ st.markdown(
 
 
 @st.cache_data(ttl=5)
-def load_predictions() -> pd.DataFrame:
+def load_predictions() -> tuple:
+    # Local: read the full predictions folder written by score_stream.py.
+    # Deploy (no Spark/Kafka running): fall back to the small versioned sample.
     files = glob.glob(os.path.join(PREDICTIONS_DIR, "*.parquet"))
-    if not files:
-        return pd.DataFrame()
-    frames = []
-    for f in files:
-        try:
-            frames.append(pd.read_parquet(f))
-        except Exception:
-            continue
-    if not frames:
-        return pd.DataFrame()
-    df = pd.concat(frames, ignore_index=True)
-    df = df.drop_duplicates(subset=["transaction_id"])
-    return df.sort_values("event_time").reset_index(drop=True)
+    if files:
+        frames = []
+        for f in files:
+            try:
+                frames.append(pd.read_parquet(f))
+            except Exception:
+                continue
+        if frames:
+            df = pd.concat(frames, ignore_index=True)
+            df = df.drop_duplicates(subset=["transaction_id"])
+            return df.sort_values("event_time").reset_index(drop=True), "live"
+
+    if os.path.exists(SAMPLE_PATH):
+        df = pd.read_parquet(SAMPLE_PATH)
+        df = df.drop_duplicates(subset=["transaction_id"])
+        return df.sort_values("event_time").reset_index(drop=True), "sample"
+
+    return pd.DataFrame(), "none"
 
 
 @st.cache_data(ttl=30)
@@ -139,9 +153,8 @@ with left:
     st.markdown("# Fraud Scoring Monitor")
 with right:
     auto = st.toggle("Auto-refresh (5s)", value=False)
-    st.caption("Reads predictions written by score_stream.py.")
 
-df = load_predictions()
+df, source = load_predictions()
 offline_metrics = load_offline_metrics()
 
 if df.empty:
@@ -150,6 +163,14 @@ if df.empty:
         "(Project 1) and scoring/score_stream.py, then this panel will fill in.",
     )
     st.stop()
+
+if source == "live":
+    st.caption("Reading live predictions written by score_stream.py.")
+else:
+    st.caption(
+        "Reading a versioned sample (data/predictions_sample/) -- no live Spark/Kafka "
+        "pipeline running in this environment. Run the full local pipeline for live data.",
+    )
 
 # ---------------------------------------------------------------------------
 # KPIs -- overall + rolling precision/recall

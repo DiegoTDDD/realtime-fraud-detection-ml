@@ -1,0 +1,9 @@
+# Lightweight dependencies for the deployed dashboard only.
+# Streamlit Community Cloud runs plain Python -- no Spark, no Docker, no
+# Kafka broker -- so this intentionally excludes pyspark, xgboost, and
+# confluent-kafka, which the full local pipeline needs but the dashboard
+# itself never imports.
+streamlit==1.39.0
+plotly==5.24.1
+pandas==2.2.3
+pyarrow==17.0.0

@@ -2,6 +2,10 @@
 data/training_raw.parquet
 data/predictions/
 data/_checkpoints/
+# NOTE: data/predictions_sample/ is intentionally NOT ignored -- it's the
+# small versioned sample the deployed dashboard reads (see
+# scoring/export_sample.py). Do not add a broader "data/" rule above that
+# would accidentally catch it.
 
 # Trained model artifact (binary, regenerable via training/train_model.py)
 training/model.joblib
