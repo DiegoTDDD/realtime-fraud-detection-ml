@@ -2,7 +2,7 @@
 
 An applied machine-learning layer on top of [`realtime-fraud-streaming`](https://github.com/DiegoTDDD/realtime-fraud-streaming) (Project 1): an offline-trained **XGBoost** classifier scores the same live transaction stream in real time via **Spark Structured Streaming**, handling severe class imbalance and surfacing model-quality metrics (not just transaction counts) on a live dashboard.
 
-- **Live dashboard:** _(fill in after deploying — see "Deploying the dashboard" below)_
+- **Live dashboard:** realtime-fraud-detection-ml.streamlit.app
 - **Repo:** github.com/DiegoTDDD/realtime-fraud-detection-ml
 - **Depends on:** github.com/DiegoTDDD/realtime-fraud-streaming (producer + Redpanda broker)
 - **Case study:** see `docs/case_study.pdf`
