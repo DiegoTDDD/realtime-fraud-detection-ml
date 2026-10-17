@@ -8,11 +8,11 @@ joblib==1.4.2
 
 # Data handling (same versions as Project 1)
 pandas==2.2.3
-pyarrow==17.0.0
+pyarrow==23.0.1
 
 # Plotting for evaluation (PR curve, feature importance)
 matplotlib==3.9.2
 
 # Dashboard (same versions as Project 1)
-streamlit==1.39.0
+streamlit==1.54.0
 plotly==5.24.1
