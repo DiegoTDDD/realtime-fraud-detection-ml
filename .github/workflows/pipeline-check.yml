@@ -79,26 +79,58 @@ jobs:
         working-directory: ml
         run: nohup python scoring/score_stream.py > ../scoring.log 2>&1 &
 
-      - name: Wait for predictions
+      - name: Wait until real predictions have been written
         working-directory: ml
         run: |
-          for i in $(seq 1 72); do
-            if ls data/predictions/*.parquet >/dev/null 2>&1; then echo "predictions written after ~$((i*5))s"; exit 0; fi
-            sleep 5
-          done
-          echo "::error::no predictions after 360s"
-          tail -40 ../scoring.log
-          exit 1
+          python - <<'PY'
+          import glob, subprocess, sys, time
+          import pandas as pd
+
+          def rows(path):
+              n = 0
+              for f in glob.glob(path + "/*.parquet"):
+                  try:
+                      n += len(pd.read_parquet(f))
+                  except Exception:
+                      pass
+              return n
+
+          def alive(pattern):
+              return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+          def wait(path, minimum, seconds, label, process):
+              start = time.time()
+              while time.time() - start < seconds:
+                  n = rows(path)
+                  if n >= minimum:
+                      print(f"{label}: {n} rows after {int(time.time() - start)}s")
+                      return
+                  if not alive(process):
+                      print(f"::error::the Spark job stopped before {label} had data (rows so far: {n})")
+                      sys.exit(1)
+                  time.sleep(5)
+              print(f"::error::{label}: only {rows(path)} rows after {seconds}s (needed {minimum})")
+              sys.exit(1)
+
+          wait("data/predictions", 100, 420, "predictions", "score_stream.py")
+          PY
 
       - name: Check the predictions
         working-directory: ml
         run: |
           python - <<'PY'
+          import sys
           import pandas as pd
           p = pd.read_parquet("data/predictions")
-          print("prediction rows:", len(p))
-          assert len(p) > 20 and {"fraud_probability", "predicted_fraud", "is_fraud"} <= set(p.columns)
-          assert p["fraud_probability"].between(0, 1).all()
+          print("prediction rows:", len(p), "| columns:", list(p.columns))
+          need = {"fraud_probability", "predicted_fraud", "is_fraud"}
+          if not need <= set(p.columns):
+              print(f"::error::unexpected columns: {list(p.columns)}")
+              sys.exit(1)
+          if len(p) < 100 or not p["fraud_probability"].between(0, 1).all():
+              print(f"::error::bad predictions: rows={len(p)}, min={p['fraud_probability'].min()}, max={p['fraud_probability'].max()}")
+              sys.exit(1)
+          print("predictions ok")
           PY
 
       - name: Dashboard opens without errors
