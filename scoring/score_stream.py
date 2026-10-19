@@ -84,7 +84,7 @@ HOME_CITY_PATH = os.path.join(PROJECT_ROOT, "training", "card_home_city.json")
 
 KAFKA_BOOTSTRAP = "localhost:19092"
 TOPIC = "transactions"
-KAFKA_PKG = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
+KAFKA_PKG = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8"
 
 # Schema of the JSON payload -- identical to Project 1's producer output.
 SCHEMA = StructType([

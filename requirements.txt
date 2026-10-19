@@ -1,5 +1,5 @@
 # Spark Structured Streaming (same version as Project 1, for compatibility with the shared Redpanda topic)
-pyspark==3.5.3
+pyspark==3.5.8
 
 # Model training and evaluation
 scikit-learn==1.5.2
