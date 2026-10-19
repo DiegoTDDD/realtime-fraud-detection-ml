@@ -1,0 +1,126 @@
+name: Pipeline check
+
+# Trains the model, then runs the real scoring pipeline: Redpanda (Docker, from the
+# sibling realtime-fraud-streaming repo) -> producer -> Spark -> XGBoost -> Parquet,
+# and opens the dashboard. The "3.5.8" column tests a newer PySpark BEFORE it is adopted.
+on:
+  push:
+    paths:
+      - requirements.txt
+      - "scoring/**"
+      - "training/**"
+      - "dashboard/**"
+      - ".github/workflows/pipeline-check.yml"
+  workflow_dispatch:
+
+jobs:
+  scoring:
+    name: Train + score / pyspark ${{ matrix.pyspark }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        pyspark: [current, "3.5.8"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ml
+
+      - uses: actions/checkout@v4
+        with:
+          repository: DiegoTDDD/realtime-fraud-streaming
+          path: streaming
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Use the candidate PySpark
+        if: matrix.pyspark != 'current'
+        working-directory: ml
+        run: |
+          sed -i "s/^pyspark==.*/pyspark==${{ matrix.pyspark }}/" requirements.txt
+          sed -i "s/spark-sql-kafka-0-10_2.12:[0-9.]*/spark-sql-kafka-0-10_2.12:${{ matrix.pyspark }}/" scoring/score_stream.py
+          grep -n "^pyspark==" requirements.txt
+          grep -n "KAFKA_PKG =" scoring/score_stream.py
+
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ml/requirements.txt confluent-kafka==2.5.3 faker==30.3.0
+          pip check
+
+      - name: Generate data and train the model
+        working-directory: ml
+        run: |
+          python training/generate_training_data.py
+          python training/train_model.py
+          ls -la training/model.joblib
+
+      - name: Start Redpanda
+        working-directory: streaming
+        run: docker compose up -d --wait redpanda
+
+      - name: Start the producer (it creates the topic on its first message)
+        working-directory: streaming
+        run: |
+          nohup python producer/producer.py > ../producer.log 2>&1 &
+          sleep 15
+          tail -3 ../producer.log
+
+      - name: Start the scoring job
+        working-directory: ml
+        run: nohup python scoring/score_stream.py > ../scoring.log 2>&1 &
+
+      - name: Wait for predictions
+        working-directory: ml
+        run: |
+          for i in $(seq 1 72); do
+            if ls data/predictions/*.parquet >/dev/null 2>&1; then echo "predictions written after ~$((i*5))s"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::no predictions after 360s"
+          tail -40 ../scoring.log
+          exit 1
+
+      - name: Check the predictions
+        working-directory: ml
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          p = pd.read_parquet("data/predictions")
+          print("prediction rows:", len(p))
+          assert len(p) > 20 and {"fraud_probability", "predicted_fraud", "is_fraud"} <= set(p.columns)
+          assert p["fraud_probability"].between(0, 1).all()
+          PY
+
+      - name: Dashboard opens without errors
+        working-directory: ml
+        run: |
+          python - <<'PY'
+          from streamlit.testing.v1 import AppTest
+          at = AppTest.from_file("dashboard/app.py", default_timeout=120).run()
+          assert not at.exception, [e.value for e in at.exception]
+          print("dashboard ok")
+          PY
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "--- producer"; tail -20 producer.log || true
+          echo "--- scoring"; tail -60 scoring.log || true
+          docker compose -f streaming/docker-compose.yml logs --tail 40 redpanda || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          pkill -f producer.py || true
+          pkill -f score_stream.py || true
+          docker compose -f streaming/docker-compose.yml down -v
