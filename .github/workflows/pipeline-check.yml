@@ -70,16 +70,20 @@ jobs:
         working-directory: ml
         run: |
           python - <<'PY'
-          import glob, subprocess, sys, time
+          import glob, os, subprocess, sys, time
           import pandas as pd
 
           def rows(path):
               n = 0
               for f in glob.glob(path + "/*.parquet"):
-                  try:
-                      n += len(pd.read_parquet(f))
-                  except Exception:
-                      pass
+                  if time.time() - os.path.getmtime(f) < 3:
+                      continue  # Spark may still be writing this file
+                  r = subprocess.run(
+                      [sys.executable, "-c",
+                       "import pyarrow.parquet as pq, sys; print(pq.read_metadata(sys.argv[1]).num_rows)", f],
+                      capture_output=True, text=True)
+                  if r.returncode == 0:
+                      n += int(r.stdout.strip())
               return n
 
           def alive(pattern):
@@ -102,13 +106,30 @@ jobs:
           wait("data/predictions", 100, 420, "predictions", "score_stream.py")
           PY
 
+      - name: Stop Spark and the producer (so the output files are complete)
+        working-directory: ml
+        run: |
+          pkill -f score_stream.py || true
+          pkill -f producer.py || true
+          sleep 5
+
       - name: Check the predictions
         working-directory: ml
         run: |
           python - <<'PY'
-          import sys
+          import glob, sys
           import pandas as pd
-          p = pd.read_parquet("data/predictions")
+
+          def read_all(path):
+              parts = []
+              for f in sorted(glob.glob(path + "/*.parquet")):
+                  try:
+                      parts.append(pd.read_parquet(f))
+                  except Exception:
+                      pass  # a file cut short when Spark was stopped
+              return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+          p = read_all("data/predictions")
           print("prediction rows:", len(p), "| columns:", list(p.columns))
           need = {"fraud_probability", "predicted_fraud", "is_fraud"}
           if not need <= set(p.columns):
