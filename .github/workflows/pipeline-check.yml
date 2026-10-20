@@ -2,7 +2,7 @@ name: Pipeline check
 
 # Trains the model, then runs the real scoring pipeline: Redpanda (Docker, from the
 # sibling realtime-fraud-streaming repo) -> producer -> Spark -> XGBoost -> Parquet,
-# and opens the dashboard. The "3.5.8" column tests a newer PySpark BEFORE it is adopted.
+# and opens the dashboard.
 on:
   push:
     paths:
@@ -15,13 +15,9 @@ on:
 
 jobs:
   scoring:
-    name: Train + score / pyspark ${{ matrix.pyspark }}
+    name: Train + score
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        pyspark: [current, "3.5.8"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,15 +37,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Use the candidate PySpark
-        if: matrix.pyspark != 'current'
-        working-directory: ml
-        run: |
-          sed -i "s/^pyspark==.*/pyspark==${{ matrix.pyspark }}/" requirements.txt
-          sed -i "s/spark-sql-kafka-0-10_2.12:[0-9.]*/spark-sql-kafka-0-10_2.12:${{ matrix.pyspark }}/" scoring/score_stream.py
-          grep -n "^pyspark==" requirements.txt
-          grep -n "KAFKA_PKG =" scoring/score_stream.py
 
       - name: Install requirements
         run: |
