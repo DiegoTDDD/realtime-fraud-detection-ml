@@ -229,7 +229,7 @@ prob_fig.update_layout(
     height=340, paper_bgcolor=PANEL, plot_bgcolor=PANEL,
     margin=dict(l=10, r=10, t=10, b=10), font=dict(color=TEXT),
     xaxis=dict(gridcolor=GRID), yaxis=dict(gridcolor=GRID, range=[0, 1]),
-    legend=dict(orientation="h", y=1.1, x=0),
+    legend=dict(orientation="h", y=1.1, x=0, bgcolor="rgba(0,0,0,0)", borderwidth=0, font=dict(color=TEXT, size=13)),
 )
 st.plotly_chart(prob_fig, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False})
 
@@ -263,7 +263,7 @@ type_fig.update_layout(
     barmode="group", height=300, paper_bgcolor=PANEL, plot_bgcolor=PANEL,
     margin=dict(l=10, r=10, t=10, b=10), font=dict(color=TEXT),
     xaxis=dict(gridcolor=GRID), yaxis=dict(gridcolor=GRID, range=[0, 1]),
-    legend=dict(orientation="h", y=1.15, x=0),
+    legend=dict(orientation="h", y=1.15, x=0, bgcolor="rgba(0,0,0,0)", borderwidth=0, font=dict(color=TEXT, size=13)),
 )
 st.plotly_chart(type_fig, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False})
 st.caption(
