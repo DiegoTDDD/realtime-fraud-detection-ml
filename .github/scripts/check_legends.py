@@ -4,6 +4,7 @@ Fails when a legend's text has a contrast ratio below 4.5:1 against what is actu
 (the legend box composited over the chart background), which is the WCAG AA minimum for normal text.
 Reasons are printed as ::error:: annotations, which are visible on the public run page.
 """
+import json
 import re
 import sys
 import time
@@ -21,17 +22,24 @@ JS = """
     if (!legend) return;
     const cs = (el) => (el ? getComputedStyle(el) : null);
     const bg = legend.querySelector('rect.bg');
-    const paper = plot.querySelector('svg.main-svg rect.bg');
+    const svg = plot.querySelector('svg.main-svg');
+    const plotBg = plot.querySelector('g.bglayer rect.bg') || plot.querySelector('rect.bg');
     const txt = legend.querySelector('text.legendtext');
     out.push({
       chart: i,
       names: [...legend.querySelectorAll('text.legendtext')].map((t) => t.textContent),
       legendBg: bg ? cs(bg).fill : null,
       legendBgOpacity: bg ? cs(bg).fillOpacity : null,
-      paperBg: paper ? cs(paper).fill : null,
-      paperBgOpacity: paper ? cs(paper).fillOpacity : null,
+      svgBg: svg ? cs(svg).backgroundColor : null,
+      plotBg: plotBg ? cs(plotBg).fill : null,
+      plotBgOpacity: plotBg ? cs(plotBg).fillOpacity : null,
       text: txt ? cs(txt).fill : null,
       textOpacity: txt ? cs(txt).opacity : null,
+      debug: {
+        legendBgHtml: bg ? bg.outerHTML.slice(0, 260) : null,
+        svgStyle: svg ? (svg.getAttribute('style') || '').slice(0, 200) : null,
+        plotBgHtml: plotBg ? plotBg.outerHTML.slice(0, 260) : null,
+      },
     });
   });
   return out;
@@ -65,11 +73,21 @@ def ratio(a, b):
     return (la + 0.05) / (lb + 0.05)
 
 
+def chart_background(item):
+    """What is drawn behind the legend: the figure background (svg), else the plot area, else white."""
+    for key, op in (("svgBg", None), ("plotBg", "plotBgOpacity")):
+        c = parse(item.get(key))
+        if c is None:
+            continue
+        alpha = c[3] * (float(item.get(op) or 1) if op else 1.0)
+        if alpha > 0:
+            return over(c[:3], alpha, (255, 255, 255))
+    return (255, 255, 255)
+
+
 def measure(item):
     """Contrast of the legend text against the legend box drawn over the chart background."""
-    paper = parse(item["paperBg"]) or (255, 255, 255, 1.0)
-    paper_alpha = float(item["paperBgOpacity"] or 1) * paper[3]
-    base = over(paper[:3], paper_alpha, (255, 255, 255)) if paper_alpha < 1 else paper[:3]
+    base = chart_background(item)
     box = parse(item["legendBg"]) or (0, 0, 0, 0.0)
     box_alpha = float(item["legendBgOpacity"] or 1) * box[3]
     behind = over(box[:3], box_alpha, base)
@@ -80,11 +98,13 @@ def measure(item):
 
 
 def selftest():
-    dark = {"paperBg": "rgb(22, 27, 34)", "paperBgOpacity": "1", "legendBg": "rgb(0, 0, 0)",
-            "legendBgOpacity": "0", "text": "rgb(201, 209, 217)", "textOpacity": "1"}
+    dark = {"svgBg": "rgb(22, 27, 34)", "plotBg": "rgb(22, 27, 34)", "plotBgOpacity": "1",
+            "legendBg": "rgb(0, 0, 0)", "legendBgOpacity": "0", "text": "rgb(201, 209, 217)", "textOpacity": "1"}
     bad = dict(dark, legendBg="rgb(255, 255, 255)", legendBgOpacity="0.5")
+    only_plot = dict(dark, svgBg="rgba(0, 0, 0, 0)")
     assert measure(dark)[0] > 10, measure(dark)
     assert measure(bad)[0] < MIN_RATIO, measure(bad)
+    assert measure(only_plot)[0] > 10, measure(only_plot)
 
 
 selftest()
@@ -109,6 +129,7 @@ with sync_playwright() as p:
             print(line)
             if r < MIN_RATIO:
                 failures.append(line + f" is below {MIN_RATIO}:1")
+                print("::warning::raw " + json.dumps({k: v for k, v in it.items() if k != "names"})[:1200])
         ctx.close()
     browser.close()
 
