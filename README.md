@@ -157,7 +157,6 @@ Leave it running. Wait for the first `sent=... frauds=...` line before moving on
 
 **6. Start the scoring job** — **terminal 2**, this repo, `fraud-ml` env:
 ```bash
-cd realtime-fraud-detection-ml
 conda activate fraud-ml
 python scoring/score_stream.py
 ```
@@ -230,6 +229,7 @@ realtime-fraud-detection-ml/
 ├── docs/
 │   ├── screenshots/
 │   └── case_study.pdf
+├── .github/                        # CI: pipeline check, dashboard check, security audit, app health
 ├── requirements.txt
 └── .gitignore
 ```
