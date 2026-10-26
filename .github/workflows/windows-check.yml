@@ -1,0 +1,183 @@
+name: Windows check
+
+# Runs the README on a real Windows machine, with Git Bash and conda as the README says: conda environment,
+# Java 17, the Hadoop native binaries in C:\hadoop\bin, model training, the producer from the sibling
+# realtime-fraud-streaming repo and the Spark scoring job (which starts a Python worker process, the part
+# that is specific to Windows). A GitHub Windows machine cannot run Linux containers, so the broker here is
+# Apache Kafka (same protocol as Redpanda, same port 19092). Runs when this file changes, every month and on demand.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "29 5 1 * *"
+  push:
+    paths:
+      - ".github/workflows/windows-check.yml"
+
+permissions:
+  contents: read
+  actions: write   # only used to keep the monthly schedule enabled (see last step)
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ml
+
+      - uses: actions/checkout@v4
+        with:
+          repository: DiegoTDDD/realtime-fraud-streaming
+          path: streaming
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-activate-base: false
+
+      - name: "README step 1: conda environment with Python 3.11 and Java 17"
+        run: |
+          conda create -n fraud-ml python=3.11 -y
+          conda activate fraud-ml
+          conda install -c conda-forge openjdk=17 -y
+          java -version
+
+      - name: "README step 2: install the dependencies"
+        run: |
+          conda activate fraud-ml
+          cd ml
+          pip install -r requirements.txt
+          # the README uses a second environment for the producer; here it shares this one to save time
+          pip install confluent-kafka==2.5.3 faker==30.3.0
+
+      - name: "README, Windows only: Hadoop native binaries in C:\\hadoop\\bin"
+        run: |
+          mkdir -p /c/hadoop/bin
+          base=https://raw.githubusercontent.com/cdarlint/winutils/master/hadoop-3.3.5/bin
+          curl -fsSL -o /c/hadoop/bin/winutils.exe "$base/winutils.exe"
+          curl -fsSL -o /c/hadoop/bin/hadoop.dll "$base/hadoop.dll"
+          ls -la /c/hadoop/bin
+
+      - name: "README step 4: train the model (generate the data, then train)"
+        run: |
+          conda activate fraud-ml
+          cd ml
+          python training/generate_training_data.py
+          python training/train_model.py
+          ls -la training/model.joblib
+
+      - name: "README step 3 (adapted): start a Kafka broker on port 19092 and create the topic with 3 partitions"
+        run: |
+          conda activate fraud-ml
+          curl -fsSL -o kafka.tgz https://archive.apache.org/dist/kafka/3.7.1/kafka_2.13-3.7.1.tgz
+          tar -xzf kafka.tgz
+          cd kafka_2.13-3.7.1
+          cat > config/kraft/windows-test.properties <<'PROPS'
+          process.roles=broker,controller
+          node.id=1
+          controller.quorum.voters=1@localhost:19093
+          listeners=PLAINTEXT://localhost:19092,CONTROLLER://localhost:19093
+          advertised.listeners=PLAINTEXT://localhost:19092
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
+          listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          log.dirs=C:/kafka-logs
+          num.partitions=3
+          offsets.topic.replication.factor=1
+          transaction.state.log.replication.factor=1
+          transaction.state.log.min.isr=1
+          PROPS
+          id=$(cmd.exe //c "bin\\windows\\kafka-storage.bat random-uuid" | tr -d '\r' | tail -1)
+          cmd.exe //c "bin\\windows\\kafka-storage.bat format -t $id -c config\\kraft\\windows-test.properties"
+          nohup cmd.exe //c "bin\\windows\\kafka-server-start.bat config\\kraft\\windows-test.properties" > ../kafka.log 2>&1 &
+          for i in $(seq 1 40); do
+            if cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --list" >/dev/null 2>&1; then echo "broker is up"; break; fi
+            sleep 3
+          done
+          cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --create --topic transactions --partitions 3"
+          cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --describe --topic transactions" | tee ../topic.txt
+          grep -q "PartitionCount: 3" ../topic.txt
+
+      - name: "README step 5: python producer/producer.py (from the realtime-fraud-streaming repo)"
+        run: |
+          conda activate fraud-ml
+          cd streaming
+          nohup python producer/producer.py > ../producer.log 2>&1 &
+          sleep 15
+          tail -3 ../producer.log
+
+      - name: "README step 6: python scoring/score_stream.py"
+        run: |
+          conda activate fraud-ml
+          cd ml
+          nohup python scoring/score_stream.py > ../scoring.log 2>&1 &
+          sleep 20
+
+      - name: Wait until real predictions were written on Windows
+        run: |
+          conda activate fraud-ml
+          cd ml
+          python - <<'PY'
+          import glob, subprocess, sys, time
+          def rows(path):
+              n = 0
+              for f in glob.glob(path + "/*.parquet"):
+                  r = subprocess.run([sys.executable, "-c",
+                                      "import pyarrow.parquet as pq, sys; print(pq.read_metadata(sys.argv[1]).num_rows)", f],
+                                     capture_output=True, text=True)
+                  if r.returncode == 0:
+                      n += int(r.stdout.strip())
+              return n
+          start = time.time()
+          while time.time() - start < 600:
+              n = rows("data/predictions")
+              if n >= 100:
+                  print(f"predictions: {n} rows after {int(time.time() - start)}s")
+                  break
+              time.sleep(5)
+          else:
+              print(f"::error::only {rows('data/predictions')} prediction rows after 600s")
+              sys.exit(1)
+          PY
+
+      - name: Stop Spark and the producer, then check the predictions
+        run: |
+          conda activate fraud-ml
+          taskkill //F //IM java.exe || true
+          taskkill //F //IM python.exe || true
+          sleep 5
+          cd ml
+          python - <<'PY'
+          import glob, sys
+          import pandas as pd
+          parts = []
+          for f in sorted(glob.glob("data/predictions/*.parquet")):
+              try:
+                  parts.append(pd.read_parquet(f))
+              except Exception:
+                  pass
+          p = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+          print("prediction rows:", len(p), "| columns:", list(p.columns))
+          need = {"fraud_probability", "predicted_fraud", "is_fraud"}
+          if not need <= set(p.columns) or len(p) < 100 or not p["fraud_probability"].between(0, 1).all():
+              print("::error::unexpected predictions")
+              sys.exit(1)
+          print("Windows scoring output ok")
+          PY
+
+      - name: Show the logs on failure
+        if: failure()
+        run: |
+          tail -40 scoring.log || true
+          tail -20 producer.log || true
+          tail -40 kafka.log || true
+
+      - name: Keep the monthly schedule enabled
+        if: ${{ always() && github.event_name == 'schedule' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/windows-check.yml/enable"
