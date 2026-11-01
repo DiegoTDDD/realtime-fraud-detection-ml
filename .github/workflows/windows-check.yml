@@ -91,15 +91,23 @@ jobs:
           transaction.state.log.min.isr=1
           PROPS
           id=$(cmd.exe //c "bin\\windows\\kafka-storage.bat random-uuid" | tr -d '\r' | tail -1)
-          cmd.exe //c "bin\\windows\\kafka-storage.bat format -t $id -c config\\kraft\\windows-test.properties"
+          echo "cluster id: $id"
+          cmd.exe //c "bin\\windows\\kafka-storage.bat format -t $id -c config\\kraft\\windows-test.properties" > ../format.log 2>&1 || {
+            echo "::error::kafka-storage format failed: $(tail -8 ../format.log | tr '\n' '|' | cut -c1-900)"; exit 1; }
           nohup cmd.exe //c "bin\\windows\\kafka-server-start.bat config\\kraft\\windows-test.properties" > ../kafka.log 2>&1 &
-          for i in $(seq 1 40); do
-            if cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --list" >/dev/null 2>&1; then echo "broker is up"; break; fi
+          up=0
+          for i in $(seq 1 50); do
+            if cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --list" >/dev/null 2>&1; then echo "broker is up"; up=1; break; fi
             sleep 3
           done
-          cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --create --topic transactions --partitions 3"
+          if [ "$up" != "1" ]; then
+            echo "::error::the Kafka broker did not come up: $(tail -25 ../kafka.log | tr '\n' '|' | cut -c1-1500)"
+            exit 1
+          fi
+          cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --create --topic transactions --partitions 3" > ../topic-create.log 2>&1 || {
+            echo "::error::topic creation failed: $(tail -8 ../topic-create.log | tr '\n' '|' | cut -c1-900)"; exit 1; }
           cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --describe --topic transactions" | tee ../topic.txt
-          grep -q "PartitionCount: 3" ../topic.txt
+          grep -q "PartitionCount: 3\|PartitionCount:3" ../topic.txt
 
       - name: "README step 5: python producer/producer.py (from the realtime-fraud-streaming repo)"
         run: |
