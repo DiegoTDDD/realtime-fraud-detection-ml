@@ -101,29 +101,30 @@ jobs:
           transaction.state.log.replication.factor=1
           transaction.state.log.min.isr=1
           PROPS
-          id=$(cmd.exe //c "bin\\windows\\kafka-storage.bat random-uuid" | tr -d '\r' | tail -1)
+          K=C:/k
+          # The Kafka .bat tools are not used: they need wmic (gone from current Windows images), overflow cmd.exe's
+          # line limit and always exit with 0. Java is called directly instead.
+          id=$(java -cp "$K/libs/*" kafka.tools.StorageTool random-uuid | tr -d '\r' | tail -1)
           echo "cluster id: $id"
-          cmd.exe //c "bin\\windows\\kafka-storage.bat format -t $id -c config\\kraft\\windows-test.properties" > /c/format.log 2>&1 || {
-            echo "::error::kafka-storage format failed: $(tail -8 /c/format.log | tr '\n' '|' | cut -c1-900)"; exit 1; }
-          nohup cmd.exe //c "bin\\windows\\kafka-server-start.bat config\\kraft\\windows-test.properties" > /c/kafka.log 2>&1 &
+          java -cp "$K/libs/*" kafka.tools.StorageTool format -t "$id" -c "$K/config/kraft/windows-test.properties" > /c/format.log 2>&1 || {
+            echo "::error::kafka-storage format failed: $(tail -8 /c/format.log | tr -d '\r' | tr '\n' '|' | cut -c1-900)"; exit 1; }
+          nohup java -Xmx1G -Xms1G -Dlog4j.configuration=file:$K/config/log4j.properties -Dkafka.logs.dir=$K/logs \
+            -cp "$K/libs/*" kafka.Kafka "$K/config/kraft/windows-test.properties" > /c/kafka.log 2>&1 &
           up=0
           for i in $(seq 1 60); do
-            # the Kafka .bat tools always exit with 0 on Windows, so readiness is the TCP port itself:
-            # curl code 7 (refused) or 28 (timeout) means closed; anything else means something answered
             curl -s --connect-timeout 2 -m 3 http://127.0.0.1:19092 >/dev/null 2>&1; c=$?
             if [ $c -ne 7 ] && [ $c -ne 28 ] && [ $c -ne 6 ]; then up=1; echo "broker port 19092 is open after about $((i*3))s (curl code $c)"; break; fi
             sleep 3
           done
           if [ "$up" != "1" ]; then
-            echo "::error::the Kafka broker did not open port 19092: $(tail -25 /c/kafka.log | tr -d '\r' | tr '\n' '|' | cut -c1-1500)"
+            echo "::error::the Kafka broker did not open port 19092: console: $(tail -15 /c/kafka.log | tr -d '\r' | tr '\n' '|' | cut -c1-700) || server.log: $(tail -25 $K/logs/server.log 2>/dev/null | tr -d '\r' | tr '\n' '|' | cut -c1-1200)"
             exit 1
           fi
-          sleep 8
-          cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --create --topic transactions --partitions 3" > /c/topic-create.log 2>&1
+          sleep 5
+          java -cp "$K/libs/*" kafka.admin.TopicCommand --bootstrap-server localhost:19092 --create --topic transactions --partitions 3 > /c/topic-create.log 2>&1 || {
+            echo "::error::topic creation failed: $(tail -8 /c/topic-create.log | tr -d '\r' | tr '\n' '|' | cut -c1-900)"; exit 1; }
           cat /c/topic-create.log
-          grep -q "Created topic" /c/topic-create.log || {
-            echo "::error::topic creation failed: $(tail -8 /c/topic-create.log | tr -d '\r' | tr '\n' '|' | cut -c1-900) || broker log: $(tail -15 /c/kafka.log | tr -d '\r' | tr '\n' '|' | cut -c1-900)"; exit 1; }
-          cmd.exe //c "bin\\windows\\kafka-topics.bat --bootstrap-server localhost:19092 --describe --topic transactions" | tee /c/topic.txt
+          java -cp "$K/libs/*" kafka.admin.TopicCommand --bootstrap-server localhost:19092 --describe --topic transactions | tee /c/topic.txt
           grep -q "PartitionCount: 3\|PartitionCount:3" /c/topic.txt
 
       - name: "README step 5: python producer/producer.py (from the realtime-fraud-streaming repo)"
