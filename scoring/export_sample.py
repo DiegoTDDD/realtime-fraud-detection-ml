@@ -14,9 +14,12 @@ Usage (after running the full local pipeline for a while):
     python scoring/export_sample.py
 """
 
+import logging
 import os
 
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PREDICTIONS_DIR = os.path.join(PROJECT_ROOT, "data", "predictions")
@@ -26,15 +29,18 @@ SAMPLE_PATH = os.path.join(SAMPLE_DIR, "predictions_sample.parquet")
 MAX_ROWS = 8000  # small enough to commit to git, large enough to fill the charts
 
 
-def main():
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     if not os.path.isdir(PREDICTIONS_DIR):
-        print(f"No predictions found at {PREDICTIONS_DIR}. Run the scoring "
-              f"pipeline first (see README).")
+        log.warning(
+            "No predictions found at %s. Run the scoring pipeline first (see README).",
+            PREDICTIONS_DIR,
+        )
         return
 
     df = pd.read_parquet(PREDICTIONS_DIR)
     df = df.drop_duplicates(subset=["transaction_id"]).sort_values("event_time")
-    print(f"Loaded {len(df):,} scored transactions.")
+    log.info("Loaded %s scored transactions.", f"{len(df):,}")
 
     if len(df) > MAX_ROWS:
         # Keep every flagged transaction (alerts are the interesting part of
@@ -44,11 +50,13 @@ def main():
         remaining_budget = max(MAX_ROWS - len(alerts), 0)
         rest_sample = rest.sample(n=min(remaining_budget, len(rest)), random_state=42)
         df = pd.concat([alerts, rest_sample]).sort_values("event_time")
-        print(f"Sampled down to {len(df):,} rows ({len(alerts):,} alerts kept in full).")
+        log.info(
+            "Sampled down to %s rows (%s alerts kept in full).", f"{len(df):,}", f"{len(alerts):,}"
+        )
 
     os.makedirs(SAMPLE_DIR, exist_ok=True)
     df.to_parquet(SAMPLE_PATH, index=False)
-    print(f"Wrote sample to {SAMPLE_PATH}")
+    log.info("Wrote sample to %s", SAMPLE_PATH)
 
 
 if __name__ == "__main__":

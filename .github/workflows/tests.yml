@@ -1,0 +1,35 @@
+name: Tests
+
+# Lint and unit tests on every push and pull request. The tests cover feature
+# engineering (including training/serving parity), threshold selection, the
+# data generator and a small end-to-end training run. No Spark or Kafka needed.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Run unit tests
+        run: pytest

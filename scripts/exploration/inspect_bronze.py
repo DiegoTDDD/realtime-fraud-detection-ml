@@ -4,8 +4,9 @@ Goal: confirm schema, row count, and the real fraud rate before using
 this data to train the Project 6 model.
 """
 
-import pandas as pd
 import glob
+
+import pandas as pd
 
 BRONZE_PATH = r"C:\Users\Usuario\Desktop\realtime-fraud-streaming\data\bronze"
 

@@ -1,28 +1,40 @@
-# Real-Time Fraud Detection — ML Scoring Layer
+# Real-Time Fraud Detection: ML Scoring Layer
 
-An applied machine-learning layer on top of [`realtime-fraud-streaming`](https://github.com/DiegoTDDD/realtime-fraud-streaming) (Project 1): an offline-trained **XGBoost** classifier scores the same live transaction stream in real time via **Spark Structured Streaming**, handling severe class imbalance and surfacing model-quality metrics (not just transaction counts) on a live dashboard.
+[![Tests](https://github.com/DiegoTDDD/realtime-fraud-detection-ml/actions/workflows/tests.yml/badge.svg)](https://github.com/DiegoTDDD/realtime-fraud-detection-ml/actions/workflows/tests.yml)
+[![Pipeline check](https://github.com/DiegoTDDD/realtime-fraud-detection-ml/actions/workflows/pipeline-check.yml/badge.svg)](https://github.com/DiegoTDDD/realtime-fraud-detection-ml/actions/workflows/pipeline-check.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- **Live dashboard:** realtime-fraud-detection-ml.streamlit.app
-- **Repo:** github.com/DiegoTDDD/realtime-fraud-detection-ml
-- **Depends on:** github.com/DiegoTDDD/realtime-fraud-streaming (producer + Redpanda broker)
-- **Case study:** see `docs/case_study.pdf`
+**Problem.** A streaming fraud monitor that only counts transactions tells a fraud team what already happened. To act while a card is being abused, each transaction needs a fraud score the moment it arrives, and that score is only useful if the team can trust how many alerts it will raise and which kinds of fraud it misses.
 
----
+**Solution.** An XGBoost classifier, trained offline, scores every transaction of a live Kafka stream inside Spark Structured Streaming. A dashboard shows its live precision and recall for each fraud pattern.
 
-## Skills demonstrated
-
-- **Applied ML on imbalanced data** — class weights (not resampling) for a ~2-7% fraud rate, PR-AUC as the primary metric, a documented threshold-selection strategy (macro-recall across fraud types under a precision floor, not a default 0.5 or aggregate F1)
-- **Feature engineering with a falsifiable process** — three iterations tested and measured against the held-out test set for the hardest fraud pattern, with the two rejected approaches documented alongside the reasoning for why they didn't work
-- **Streaming ML serving** — a trained model integrated into Spark Structured Streaming via `foreachBatch`, with feature parity enforced between training and serving to avoid training-serving skew
-- **Stateful streaming under a documented constraint** — velocity features computed across micro-batches using process-local state, with the single-process limitation stated explicitly rather than glossed over
-- **Real-world Windows/Spark debugging** — resolved five distinct infrastructure failures end-to-end (missing Hadoop native binaries, a non-persistent Kafka topic, Python worker spawn failures, schema-inference errors on null columns), each with a root-cause explanation, not just a fix
-- **ML-aware dashboarding** — live precision/recall (not just volume), because Project 1's injected ground-truth labels make this rare "self-grading" view possible
+- **Live dashboard:** [realtime-fraud-detection-ml.streamlit.app](https://realtime-fraud-detection-ml.streamlit.app)
+- **Model card:** [`docs/model_card.md`](docs/model_card.md) (data, metrics per pattern, limitations, risks)
+- **Design decisions:** [`docs/adr/`](docs/adr/README.md)
+- **Builds on:** [realtime-fraud-streaming](https://github.com/DiegoTDDD/realtime-fraud-streaming) (producer and Redpanda broker)
+- **Case study:** [`docs/case_study.pdf`](docs/case_study.pdf)
 
 ---
 
-## Why this project
+## Results
 
-Project 1 built the streaming backbone — event flow, windowed aggregation, a descriptive dashboard — and closed with an explicit roadmap: turn the descriptive monitor into a predictive one. This project does that: the same stream, scored transaction-by-transaction by a model trained offline on the injected fraud patterns, with the model's real-world performance (not just its offline test-set numbers) visible on a live dashboard.
+Held-out test set: the latest 20% of 150,000 transactions, split by time. Reproducible with `python training/generate_training_data.py && python training/train_model.py`.
+
+| Metric (threshold 0.5625) | Value |
+|---|---|
+| PR-AUC | 0.9925 |
+| Precision | 95.75% |
+| Recall | 96.55% |
+
+| Fraud pattern | Test examples | Recall |
+|---|---|---|
+| card_testing (bursts of tiny charges) | 1,772 | 100% |
+| high_amount (R$5k to R$15k) | 185 | 96.2% |
+| impossible_travel (charge far from home) | 190 | **64.7%**, the known weak spot (see [Limitations](#limitations)) |
+
+The threshold is not 0.5 or the best-F1 point. It maximizes the mean recall across the three patterns while keeping precision at 95% or more, at most one false alarm per 20 alerts ([ADR 0004](docs/adr/0004-threshold-policy.md)). The best-F1 point would be driven by card testing, which is 83% of fraud rows.
+
+![Precision-recall curve](docs/screenshots/pr_curve.png)
 
 ---
 
@@ -47,49 +59,18 @@ Project 1 built the streaming backbone — event flow, windowed aggregation, a d
 
 This job is an **independent second consumer** of Project 1's `transactions` topic — it doesn't modify or depend on Project 1's own Bronze/Gold pipeline running at the same time, only on the topic existing.
 
----
+**Training** (`training/`): `generate_training_data.py` writes 150,000 transactions with the producer's own simulation logic ([ADR 0001](docs/adr/0001-synthetic-training-data.md)). `train_model.py` splits them by time, builds features, trains XGBoost with class weights ([ADR 0005](docs/adr/0005-class-weights-and-pr-auc.md)) and chooses the threshold.
 
-## The model
+**Features** (`training/features.py`) are shared by training and the scoring job, and a unit test checks that both produce identical values ([ADR 0006](docs/adr/0006-shared-features-and-time-split.md)):
 
-**Training data:** Project 1's Bronze layer (real transaction history) had only 189 fraud examples — too few for stable metrics. Rather than modify the producer's logic, its exact transaction-generation logic (same card population, same three fraud patterns, same base rates) was reused in a standalone batch script (`training/generate_training_data.py`) to generate 150,000 transactions directly to Parquet, without running Kafka/Spark for hours.
-
-**Class imbalance:** class weights (`scale_pos_weight` in XGBoost), not resampling — preserves the real data distribution. Evaluated with PR-AUC, since accuracy is meaningless at this class balance.
-
-**Threshold selection:** not the default 0.5, and not the aggregate-F1-optimal point either — both get dominated by whichever fraud pattern has the most examples (`card_testing`, at ~83% of fraud volume here). The final threshold maximizes the *average* recall across the three fraud types, under a 95% precision floor (an alert budget a real fraud team could act on).
-
-**Final offline metrics** (held-out, chronological 20% test split):
-
-| Metric | Value |
+| Feature | Catches |
 |---|---|
-| PR-AUC | 0.9925 |
-| Precision @ threshold | 95.75% |
-| Recall @ threshold | 96.55% |
-| Recall — high_amount | 96.2% |
-| Recall — card_testing | 100% |
-| Recall — impossible_travel | 64.7% |
+| `amount` | high_amount |
+| `distance_km_from_home` | impossible_travel (three designs compared in [ADR 0002](docs/adr/0002-distance-feature.md)) |
+| `tx_count_last_5min`, `time_since_last_tx` | card_testing bursts |
+| `hour_of_day`, `category` | general behaviour |
 
-### Feature engineering: three iterations on `impossible_travel`
-
-`high_amount` and `card_testing` were straightforward to separate. `impossible_travel` was not, and the process of getting there — including two rejected approaches — is documented because it's more informative than the final number alone:
-
-| Approach | Recall (`impossible_travel`) | Why it stalled |
-|---|---|---|
-| Binary `is_unusual_city` flag | 0.59–0.65 | Too coarse — can't distinguish a nearby trip from a cross-country jump |
-| `implied_speed_kmh` (distance from the *previous* transaction / elapsed time) | 0.62 | This dataset's per-card transaction cadence means the "previous transaction" is often hours away, so elapsed-time-aware speed doesn't reliably flag a geographically anomalous but time-isolated transaction |
-| `distance_km_from_home` (Haversine, from an inferred home city) — **final** | **0.65** | Best of the three tested; kept |
-
-**Known limitation:** 0.65 recall on `impossible_travel` is a real gap, not a rounding error. Root cause: only ~190 test examples of this pattern (high sampling variance), and 15% of Project 1's *legitimate* transactions also occur away from the card's home city, so distance alone has an irreducible false-negative rate without more data or a stronger signal (e.g. an actual flight-time feasibility model). This is stated here rather than hidden because a recruiter who runs the numbers will find it either way.
-
----
-
-## Tech stack
-
-- **Model:** XGBoost, scikit-learn (training + evaluation)
-- **Serving:** Spark Structured Streaming (PySpark 3.5), `foreachBatch`
-- **Streaming broker:** Redpanda (Kafka API) — from Project 1, reused as-is
-- **Storage:** Parquet (predictions)
-- **Dashboard:** Streamlit + Plotly
-- **Runtime:** Python 3.11 (conda envs `fraud-ml` for this repo, `fraud` for Project 1's producer), Windows + Git Bash
+**Serving** (`scoring/score_stream.py`): a second, independent consumer of the `transactions` topic. It loads the model once and scores each micro-batch in `foreachBatch`. Per-card velocity state is kept across micro-batches in the process ([ADR 0003](docs/adr/0003-process-local-velocity-state.md)). Results go to Parquet, which the dashboard reads.
 
 ---
 
@@ -205,45 +186,86 @@ The deployed dashboard will show a caption noting it's reading the versioned sam
 
 ---
 
+## Design decisions
+
+| Decision | Why |
+|---|---|
+| [Synthetic training data from the producer's logic](docs/adr/0001-synthetic-training-data.md) | The live stream had only 189 fraud examples. This data is reproducible and matches the stream's distribution |
+| [`distance_km_from_home` for impossible travel](docs/adr/0002-distance-feature.md) | The best of three measured designs (0.65 recall versus 0.59 to 0.65 and 0.62) |
+| [Process-local velocity state](docs/adr/0003-process-local-velocity-state.md) | Simple and correct for one process. Redis or Spark state is the step to take before running several workers |
+| [Mean recall across patterns under a 95% precision floor](docs/adr/0004-threshold-policy.md) | Best F1 lets the most frequent pattern hide a rare one |
+| [Class weights, PR-AUC](docs/adr/0005-class-weights-and-pr-auc.md) | Resampling would break the time-based velocity features. Accuracy is meaningless at 7.5% fraud |
+| [Shared feature module, time split, home cities from training rows](docs/adr/0006-shared-features-and-time-split.md) | Removes the training/serving skew and the test-set leak found in review |
+
+What the project shows:
+
+- **Applied ML on imbalanced data** — class weights (not resampling) for a ~2-7% fraud rate, PR-AUC as the primary metric, a documented threshold-selection strategy (macro-recall across fraud types under a precision floor, not a default 0.5 or aggregate F1)
+- **Feature engineering with a falsifiable process** — three iterations tested and measured against the held-out test set for the hardest fraud pattern, with the two rejected approaches documented alongside the reasoning for why they didn't work
+- **Streaming ML serving** — a trained model integrated into Spark Structured Streaming via `foreachBatch`, with feature parity enforced between training and serving to avoid training-serving skew
+- **Stateful streaming under a documented constraint** — velocity features computed across micro-batches using process-local state, with the single-process limitation stated explicitly rather than glossed over
+- **Real-world Windows/Spark debugging** — resolved five distinct infrastructure failures end-to-end (missing Hadoop native binaries, a non-persistent Kafka topic, Python worker spawn failures, schema-inference errors on null columns), each with a root-cause explanation, not just a fix
+- **ML-aware dashboarding** — live precision/recall (not just volume), because Project 1's injected ground-truth labels make this rare "self-grading" view possible
+
+---
+
+## Limitations
+
+- **impossible_travel recall is 64.7%.** About 13.5% of legitimate transactions also happen away from the card's home city, and the test set has only 190 examples of this pattern (about ±7 points of uncertainty). Closing the gap needs signal the stream does not carry, such as travel history or device location.
+- **Synthetic data.** The fraud patterns are simple and fixed, so card-testing recall of 100% will not carry over to real transactions.
+- **Single scoring process.** Velocity state lives in memory: it is lost on restart and is not shared across workers.
+- **Threshold chosen on the test set.** The reported precision is slightly optimistic. A separate validation split is the fix if the policy grows.
+- **No drift alerts or scheduled retraining.** Live precision and recall are visible on the dashboard, but nothing acts on them.
+
+More in the [model card](docs/model_card.md#limitations).
+
+---
+
 ## Project layout
 
 ```
 realtime-fraud-detection-ml/
 ├── training/
-│   ├── generate_training_data.py   # batch data generation (reuses Project 1's fraud logic)
-│   ├── train_model.py              # feature engineering + XGBoost + threshold selection
-│   ├── model.joblib                # trained model + feature list + threshold (gitignored)
-│   ├── card_home_city.json         # home-city mapping, reused identically at serving time
+│   ├── generate_training_data.py   # reproducible batch data (reuses the producer's fraud logic)
+│   ├── features.py                 # feature engineering shared by training and serving
+│   ├── evaluation.py               # time split, threshold policy, recall per pattern
+│   ├── train_model.py              # trains XGBoost and writes the artifacts below
+│   ├── model.joblib                # model + feature list + threshold (gitignored)
+│   ├── card_home_city.json         # home-city map, used unchanged at serving time
 │   └── metrics.json                # offline evaluation results
 ├── scoring/
 │   ├── score_stream.py             # Spark Structured Streaming + foreachBatch scoring job
-│   └── export_sample.py            # exports a small versioned sample for the deployed dashboard
+│   └── export_sample.py            # small versioned sample for the deployed dashboard
 ├── dashboard/
-│   ├── app.py                      # Streamlit live model-quality dashboard
-│   └── requirements.txt            # lightweight deps for the deployed dashboard (no Spark/XGBoost)
+│   ├── app.py                      # Streamlit model-quality dashboard
+│   └── requirements.txt            # light dependencies for the deployed dashboard
+├── tests/                          # pytest: features, train/serve parity, threshold policy, training
+├── scripts/exploration/            # one-off script used to inspect the first Bronze data
 ├── data/
-│   ├── training_raw.parquet        # batch-generated training set (gitignored)
-│   ├── predictions/                # scored live transactions (gitignored)
+│   ├── training_raw.parquet        # generated training set (gitignored)
+│   ├── predictions/                # live scored transactions (gitignored)
 │   ├── predictions_sample/         # small sample for the deployed dashboard (committed)
 │   └── _checkpoints/               # Spark streaming checkpoints (gitignored)
 ├── docs/
+│   ├── model_card.md
+│   ├── adr/                        # architecture decision records
 │   ├── screenshots/
 │   └── case_study.pdf
-├── .github/                        # CI: pipeline check, dashboard check, security audit, app health
-├── requirements.txt
-└── .gitignore
+├── .github/                        # CI: tests, pipeline, Windows, dashboard, security, app health
+├── pyproject.toml                  # project metadata, pytest and ruff settings
+├── requirements.txt                # full pipeline
+└── requirements-test.txt           # light set for the unit tests
 ```
 
 ---
 
 ## Notes on the data
 
-Training data is synthetic, generated by reusing Project 1's exact transaction-simulation logic in batch rather than by running the real-time producer for hours. Live scoring runs against Project 1's actual Kafka stream. Ground-truth fraud labels (injected by the producer) make it possible to show live precision/recall on the dashboard — most real-world fraud dashboards can't do this, since they don't have an oracle to check predictions against in real time.
-
-The deployed dashboard reads a small consolidated sample of scored predictions (see "Deploying the dashboard" above), because the cloud host runs neither Spark nor Docker; the full local pipeline regenerates unlimited live data on demand.
+Training data is synthetic, generated with the producer's exact simulation logic in batch rather than by running the real-time producer for hours. Live scoring runs against the real Kafka stream. The producer's ground-truth fraud labels make live precision and recall possible on the dashboard; most real fraud dashboards cannot show this, because they have no oracle to check predictions against in real time.
 
 ## Automated checks
 
+- **Tests** (`tests.yml`) run on every push and pull request: `ruff` (including type hints on every training and scoring function, and no `print` outside scripts) and 23 unit tests. They cover the features, the check that the scoring job's micro-batch features equal the training features, the threshold policy (including a case where best F1 would drop a rare pattern), the time split, home cities learned from training rows only, the data generator's fraud patterns and a small end-to-end training run.
 - **Pipeline check** (`pipeline-check.yml`) generates the training data, trains the model, starts Redpanda and the producer from `realtime-fraud-streaming`, runs the Spark scoring job, checks that real predictions are written (probabilities between 0 and 1) and opens the dashboard.
+- **Windows check** (`windows-check.yml`) runs the README steps on Windows with conda, including the Hadoop binaries Spark needs there.
 - **Security audit** (`security-audit.yml`) audits every `requirements*.txt` with `pip-audit` whenever dependencies change and every Monday. It fails only when a vulnerable package has a fixed version available.
 - **App health** (`app-health.yml`) opens the [live app](https://realtime-fraud-detection-ml.streamlit.app) in a real browser after each push and once a day (waking it if it was asleep) and fails if the app shows an error.

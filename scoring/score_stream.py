@@ -26,6 +26,9 @@ because they depend on data *outside* a single micro-batch:
     cluster. A production system would back this with a proper state
     store (e.g. Spark's own stateful streaming operators, or Redis).
 
+Feature code is imported from training/features.py, the same module training
+uses, so the two cannot drift apart (tests/test_features.py checks it).
+
 Run (inside the `fraud-ml` conda env, with Redpanda up -- Project 1's
 streaming_job.py does NOT need to be running; this is an independent
 consumer of the same topic):
@@ -33,15 +36,16 @@ consumer of the same topic):
 Stop with Ctrl+C.
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import os
 import platform
 import sys
-from collections import deque
+from typing import Any
 
 import joblib
-import numpy as np
-import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Tell Spark exactly which Python executable to use for worker processes.
@@ -65,16 +69,25 @@ if platform.system() == "Windows":
     os.environ.setdefault("HADOOP_HOME", hadoop_home)
     os.environ["PATH"] = os.path.join(hadoop_home, "bin") + os.pathsep + os.environ.get("PATH", "")
 
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, from_json, to_timestamp
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, BooleanType, TimestampType,
+    BooleanType,
+    DoubleType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
 # ---------------------------------------------------------------------------
 # Paths & config
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "training"))
+from features import CardHistory, featurize_batch  # noqa: E402
+
+log = logging.getLogger(__name__)
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 PREDICTIONS_DIR = os.path.join(DATA_DIR, "predictions")
 CHECKPOINT_DIR = os.path.join(DATA_DIR, "_checkpoints", "predictions")
@@ -87,46 +100,19 @@ TOPIC = "transactions"
 KAFKA_PKG = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8"
 
 # Schema of the JSON payload -- identical to Project 1's producer output.
-SCHEMA = StructType([
-    StructField("transaction_id", StringType()),
-    StructField("card_id", StringType()),
-    StructField("amount", DoubleType()),
-    StructField("merchant", StringType()),
-    StructField("category", StringType()),
-    StructField("city", StringType()),
-    StructField("timestamp", StringType()),
-    StructField("is_fraud", BooleanType()),
-    StructField("fraud_type", StringType()),
-])
-
-# City coordinates -- must match training/train_model.py exactly, or
-# distance_km_from_home would be computed differently at serving time
-# than at training time.
-CITY_COORDS = {
-    "Sao Paulo": (-23.5505, -46.6333),
-    "Rio de Janeiro": (-22.9068, -43.1729),
-    "Belo Horizonte": (-19.9167, -43.9345),
-    "Curitiba": (-25.4284, -49.2733),
-    "Porto Alegre": (-30.0346, -51.2177),
-    "Salvador": (-12.9777, -38.5016),
-    "Recife": (-8.0476, -34.8770),
-    "Fortaleza": (-3.7172, -38.5433),
-    "Brasilia": (-15.7939, -47.8828),
-    "Manaus": (-3.1190, -60.0217),
-}
-
-
-def haversine_km(city_a: str, city_b: str) -> float:
-    if city_a == city_b:
-        return 0.0
-    lat1, lon1 = CITY_COORDS[city_a]
-    lat2, lon2 = CITY_COORDS[city_b]
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-    return 2 * 6371 * np.arcsin(np.sqrt(a))
-
+SCHEMA = StructType(
+    [
+        StructField("transaction_id", StringType()),
+        StructField("card_id", StringType()),
+        StructField("amount", DoubleType()),
+        StructField("merchant", StringType()),
+        StructField("category", StringType()),
+        StructField("city", StringType()),
+        StructField("timestamp", StringType()),
+        StructField("is_fraud", BooleanType()),
+        StructField("fraud_type", StringType()),
+    ]
+)
 
 # Explicit output schema. Without this, Spark infers types from the pandas
 # data on each call to createDataFrame() -- which fails with
@@ -134,41 +120,51 @@ def haversine_km(city_a: str, city_b: str) -> float:
 # micro-batch (e.g. fraud_type, when that batch happens to contain zero
 # fraudulent transactions). Declaring the schema up front avoids relying
 # on per-batch inference altogether.
-OUTPUT_SCHEMA = StructType([
-    StructField("transaction_id", StringType()),
-    StructField("card_id", StringType()),
-    StructField("amount", DoubleType()),
-    StructField("merchant", StringType()),
-    StructField("category", StringType()),
-    StructField("city", StringType()),
-    StructField("timestamp", StringType()),
-    StructField("event_time", TimestampType()),
-    StructField("is_fraud", BooleanType()),
-    StructField("fraud_type", StringType()),
-    StructField("fraud_probability", DoubleType()),
-    StructField("predicted_fraud", BooleanType()),
-])
+OUTPUT_SCHEMA = StructType(
+    [
+        StructField("transaction_id", StringType()),
+        StructField("card_id", StringType()),
+        StructField("amount", DoubleType()),
+        StructField("merchant", StringType()),
+        StructField("category", StringType()),
+        StructField("city", StringType()),
+        StructField("timestamp", StringType()),
+        StructField("event_time", TimestampType()),
+        StructField("is_fraud", BooleanType()),
+        StructField("fraud_type", StringType()),
+        StructField("fraud_probability", DoubleType()),
+        StructField("predicted_fraud", BooleanType()),
+    ]
+)
 
-# ---------------------------------------------------------------------------
-# Load model artifacts once, before the stream starts -- not per micro-batch.
-# ---------------------------------------------------------------------------
-print(f"Loading model from {MODEL_PATH}...")
-artifact = joblib.load(MODEL_PATH)
-MODEL = artifact["model"]
-FEATURE_COLS = artifact["feature_cols"]
-THRESHOLD = artifact["threshold"]
-print(f"Model loaded. {len(FEATURE_COLS)} features, threshold={THRESHOLD:.4f}")
+OUTPUT_COLS = [field.name for field in OUTPUT_SCHEMA.fields]
 
-with open(HOME_CITY_PATH) as f:
-    HOME_CITY = json.load(f)
-
-# Process-local state: card_id -> deque of recent transaction epoch-seconds.
-# Computes tx_count_last_5min / time_since_last_tx across micro-batches.
-# See module docstring for why this only works in single-process local mode.
-CARD_HISTORY: dict = {}
+# Filled by load_artifacts() in main(), once before the stream starts, not per micro-batch.
+MODEL: Any = None
+FEATURE_COLS: list[str] = []
+THRESHOLD = 0.5
+HOME_CITY: dict[str, str] = {}
+# Recent transaction times per card, across micro-batches. Process-local: see the
+# module docstring for why this only works while the job runs as a single process.
+CARD_HISTORY = CardHistory()
 
 
-def score_batch(batch_df, batch_id: int):
+def load_artifacts() -> None:
+    """Load the model, its feature list, its threshold and the home-city map."""
+    global MODEL, FEATURE_COLS, THRESHOLD, HOME_CITY
+    log.info("Loading model from %s...", MODEL_PATH)
+    artifact = joblib.load(MODEL_PATH)
+    MODEL, FEATURE_COLS, THRESHOLD = (
+        artifact["model"],
+        artifact["feature_cols"],
+        artifact["threshold"],
+    )
+    with open(HOME_CITY_PATH, encoding="utf-8") as f:
+        HOME_CITY = json.load(f)
+    log.info("Model loaded. %d features, threshold=%.4f", len(FEATURE_COLS), THRESHOLD)
+
+
+def score_batch(batch_df: DataFrame, batch_id: int) -> None:
     """foreachBatch callback: score one Spark micro-batch with the offline
     XGBoost model and append the results to the predictions Parquet path.
     """
@@ -176,55 +172,13 @@ def score_batch(batch_df, batch_id: int):
     if pdf.empty:
         return
 
-    # Process in arrival order so velocity features are computed
-    # consistently within the batch.
-    pdf = pdf.sort_values("event_time").reset_index(drop=True)
-
-    distances = []
-    tx_counts = []
-    times_since_last = []
-
-    for _, row in pdf.iterrows():
-        card_id = row["card_id"]
-        city = row["city"]
-        ts = row["event_time"].timestamp()
-
-        # --- distance_km_from_home ---
-        home = HOME_CITY.get(card_id)
-        distances.append(haversine_km(city, home) if home else 0.0)
-
-        # --- velocity features, using process-local history ---
-        history = CARD_HISTORY.setdefault(card_id, deque())
-        while history and ts - history[0] > 300:  # 5-minute window
-            history.popleft()
-        tx_counts.append(len(history))
-        times_since_last.append(ts - history[-1] if history else 99999.0)
-        history.append(ts)
-
-    pdf["distance_km_from_home"] = distances
-    pdf["tx_count_last_5min"] = tx_counts
-    pdf["time_since_last_tx"] = times_since_last
-    pdf["hour_of_day"] = pdf["event_time"].dt.hour
-
-    category_dummies = pd.get_dummies(pdf["category"], prefix="category")
-    pdf = pd.concat([pdf, category_dummies], axis=1)
-
-    # Ensure every feature column the model expects exists -- a category
-    # that didn't appear in this micro-batch would otherwise be missing.
-    for col_name in FEATURE_COLS:
-        if col_name not in pdf.columns:
-            pdf[col_name] = 0
+    pdf = featurize_batch(pdf, HOME_CITY, CARD_HISTORY, FEATURE_COLS)
 
     X = pdf[FEATURE_COLS]
     pdf["fraud_probability"] = MODEL.predict_proba(X)[:, 1]
     pdf["predicted_fraud"] = (pdf["fraud_probability"] >= THRESHOLD).astype(bool)
 
-    output_cols = [
-        "transaction_id", "card_id", "amount", "merchant", "category", "city",
-        "timestamp", "event_time", "is_fraud", "fraud_type",
-        "fraud_probability", "predicted_fraud",
-    ]
-    result = pdf[output_cols]
+    result = pdf[OUTPUT_COLS]
 
     (
         batch_df.sparkSession.createDataFrame(result, schema=OUTPUT_SCHEMA)
@@ -233,13 +187,12 @@ def score_batch(batch_df, batch_id: int):
     )
 
     n_alerts = int(result["predicted_fraud"].sum())
-    print(f"[batch {batch_id}] scored {len(result)} tx, {n_alerts} alerts")
+    log.info("[batch %d] scored %d tx, %d alerts", batch_id, len(result), n_alerts)
 
 
 def build_spark() -> SparkSession:
     return (
-        SparkSession.builder
-        .appName("realtime-fraud-scoring")
+        SparkSession.builder.appName("realtime-fraud-scoring")
         .config("spark.jars.packages", KAFKA_PKG)
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.sql.session.timeZone", "UTC")
@@ -247,13 +200,14 @@ def build_spark() -> SparkSession:
     )
 
 
-def main():
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    load_artifacts()
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
 
     raw = (
-        spark.readStream
-        .format("kafka")
+        spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
         .option("subscribe", TOPIC)
         .option("startingOffsets", "earliest")
@@ -267,14 +221,13 @@ def main():
     )
 
     query = (
-        parsed.writeStream
-        .foreachBatch(score_batch)
+        parsed.writeStream.foreachBatch(score_batch)
         .option("checkpointLocation", CHECKPOINT_DIR)
         .queryName("fraud_scoring")
         .start()
     )
 
-    print("Scoring stream started. Ctrl+C to stop.")
+    log.info("Scoring stream started. Ctrl+C to stop.")
     query.awaitTermination()
 
 
