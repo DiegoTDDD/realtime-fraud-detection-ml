@@ -114,7 +114,7 @@ This pipeline spans two repos and the pieces must be started in the order below.
 
 - Docker Desktop installed and running
 - Java 17 installed (`java -version` should report 17)
-- **Windows only:** `C:\hadoop\bin\winutils.exe` and `C:\hadoop\bin\hadoop.dll` present. Get them from the community `cdarlint/winutils` repo — use the **raw.githubusercontent.com** URL, not a `github.com/.../raw/...` link (the latter can silently return an HTML page instead of the binary). A patch-version mismatch with the Hadoop version Spark resolves at runtime (e.g. binaries from `hadoop-3.3.5` against a Spark build pulling `hadoop-client-runtime:3.3.4`) is fine.
+- **Windows only:** `C:\hadoop\bin\winutils.exe` and `C:\hadoop\bin\hadoop.dll` present. Get them from the community `cdarlint/winutils` repo — use the **raw.githubusercontent.com** URL, not a `github.com/.../raw/...` link (the latter can silently return an HTML page instead of the binary). A patch-version mismatch with the Hadoop version Spark resolves at runtime (e.g. binaries from `hadoop-3.3.5` against a Spark build pulling `hadoop-client-runtime:3.3.4`) is fine. `winutils.exe` needs the Microsoft Visual C++ 2010 runtime: if running `C:\hadoop\bin\winutils.exe ls C:\hadoop` fails, install the "Microsoft Visual C++ 2010 Redistributable (x64)" (for example `choco install vcredist2010`); without it Spark cannot create its checkpoint folders.
 - A local clone of [`realtime-fraud-streaming`](https://github.com/DiegoTDDD/realtime-fraud-streaming) (Project 1) as a sibling directory — this repo reuses its Redpanda broker and producer, not a copy of them.
 
 ### Steps
