@@ -60,6 +60,16 @@ jobs:
           curl -fsSL -o /c/hadoop/bin/winutils.exe "$base/winutils.exe"
           curl -fsSL -o /c/hadoop/bin/hadoop.dll "$base/hadoop.dll"
           ls -la /c/hadoop/bin
+          # Spark calls winutils.exe to create its checkpoint folders. If winutils cannot run on this image
+          # (missing Visual C++ 2010 runtime, msvcr100.dll), install that runtime and check again.
+          w=0; /c/hadoop/bin/winutils.exe ls /c/hadoop/bin > /dev/null 2>&1 || w=$?
+          echo "winutils before runtime install: exit $w"
+          if [ "$w" != "0" ]; then
+            choco install vcredist2010 -y --no-progress > /c/vcredist.log 2>&1 || tail -5 /c/vcredist.log
+            w=0; /c/hadoop/bin/winutils.exe ls /c/hadoop/bin > /dev/null 2>&1 || w=$?
+            echo "winutils after runtime install: exit $w"
+          fi
+          [ "$w" = "0" ] || { echo "::error::winutils.exe still fails (exit $w)"; exit 1; }
 
       - name: "README step 4: train the model (generate the data, then train)"
         run: |
@@ -198,6 +208,8 @@ jobs:
       - name: Show the logs on failure
         if: failure()
         run: |
+          # the first exception lines carry the real cause; the tail is mostly the stack trace
+          grep -n -m 6 -A 4 -E "Exception|Error:" scoring.log || true
           tail -40 scoring.log || true
           tail -20 producer.log || true
           tail -40 /c/kafka.log || true
