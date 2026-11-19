@@ -14,9 +14,10 @@ model on. Reusing the same generation logic keeps the two consistent
 without paying the cost of running Kafka + Spark just to accumulate rows.
 
 The output is fully reproducible: the random seed and the start of the
-simulated window (2026-01-01, about 4.2 hours at 10 events/second) are fixed, so every run writes the same transactions
-(only the random transaction_id values differ) and training/metrics.json can be
-reproduced exactly.
+simulated window (2026-01-01, about 4.2 hours at 10 events/second) are
+fixed, so every run writes the same transactions (only the random
+transaction_id values differ) and training/metrics.json can be reproduced
+exactly.
 
 Usage:
     python training/generate_training_data.py
