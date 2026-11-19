@@ -14,7 +14,7 @@ model on. Reusing the same generation logic keeps the two consistent
 without paying the cost of running Kafka + Spark just to accumulate rows.
 
 The output is fully reproducible: the random seed and the start of the
-simulated 30-day window are fixed, so every run writes the same transactions
+simulated window (2026-01-01, about 4.2 hours at 10 events/second) are fixed, so every run writes the same transactions
 (only the random transaction_id values differ) and training/metrics.json can be
 reproduced exactly.
 
@@ -193,9 +193,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     log.info("Generating %s transactions in batch...", f"{NUM_TRANSACTIONS:,}")
 
-    # Spread timestamps across a simulated 30-day window, at roughly the
-    # producer's original pace (~10 events/second), so the data looks like
-    # a plausible historical slice rather than 150k events in one instant.
+    # Space events at the producer's pace (~10 events/second), so the velocity
+    # features the model learns match the live stream it scores. 150,000 events
+    # at that pace cover about 4.2 hours of simulated time.
     start_time = START_TIME
     rows = []
     frauds = 0

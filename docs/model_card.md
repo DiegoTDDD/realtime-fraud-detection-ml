@@ -14,7 +14,7 @@ Scoring card transactions from the [realtime-fraud-streaming](https://github.com
 
 ## Training data
 
-- 150,000 synthetic transactions written by `training/generate_training_data.py`, which reuses the producer's simulation logic: 200 cards, 10 Brazilian cities, 8 merchant categories, a simulated 30-day window starting 2026-01-01 at about 10 transactions per second.
+- 150,000 synthetic transactions written by `training/generate_training_data.py`, which reuses the producer's simulation logic: 200 cards, 10 Brazilian cities, 8 merchant categories, about 4.2 hours of simulated time starting 2026-01-01, at the live producer's pace of about 10 transactions per second (so the velocity features match the stream the model scores).
 - Three injected fraud patterns:
   - **high_amount:** R$5,000 to R$15,000 in the card's home city.
   - **card_testing:** bursts of 5 to 12 charges of R$0.50 to R$5.00 on one card.
