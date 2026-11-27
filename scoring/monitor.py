@@ -9,6 +9,9 @@ check fails, so a degraded model is noticed without opening the dashboard.
     are the same, run on the window whose labels have arrived);
   - recall per fraud pattern, against a floor per pattern, skipped when a pattern has too few
     examples in the window to judge;
+  - a quality check fails only when the evidence says the rate is below its floor: the upper end
+    of the 95% Wilson interval must be under the floor. With 10 examples, 8 caught (80%) is
+    still consistent with a 97% model; 40 of 100 is not;
   - PSI of each monitored feature against its training distribution
     (training/reference_distribution.json).
 
@@ -67,6 +70,24 @@ def psi(values: np.ndarray, edges: list[float], expected: list[float], eps: floa
     return float(np.sum((actual - base) * np.log(actual / base)))
 
 
+def wilson_upper(successes: int, n: int, z: float = 1.96) -> float:
+    """Upper end of the Wilson score interval for a proportion."""
+    if n == 0:
+        return 1.0
+    p = successes / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (centre + margin) / (1 + z * z / n)
+
+
+def below_floor(name: str, successes: int, n: int, floor: float) -> str | None:
+    """A failure message if the rate is confidently below the floor, else None."""
+    upper = wilson_upper(successes, n)
+    if n and upper < floor:
+        return f"{name} {successes / n:.3f} < {floor} (95% upper bound {upper:.3f}, n={n})"
+    return None
+
+
 def evaluate(df: pd.DataFrame, reference: dict, t: Thresholds) -> tuple[list[str], dict]:
     """Return (failures, summary) for a window of scored predictions with features."""
     summary: dict = {"rows": len(df)}
@@ -76,23 +97,23 @@ def evaluate(df: pd.DataFrame, reference: dict, t: Thresholds) -> tuple[list[str
     failures: list[str] = []
     y = df["is_fraud"].astype(bool).to_numpy()
     pred = df["predicted_fraud"].astype(bool).to_numpy()
-    tp = int((y & pred).sum())
-    precision = tp / pred.sum() if pred.sum() else math.nan
-    recall = tp / y.sum() if y.sum() else math.nan
-    summary.update(precision=precision, recall=recall, frauds=int(y.sum()), alerts=int(pred.sum()))
-    if not math.isnan(precision) and precision < t.min_precision:
-        failures.append(f"precision {precision:.3f} < {t.min_precision}")
-    if not math.isnan(recall) and recall < t.min_recall:
-        failures.append(f"recall {recall:.3f} < {t.min_recall}")
+    tp, alerts, frauds = int((y & pred).sum()), int(pred.sum()), int(y.sum())
+    precision = tp / alerts if alerts else math.nan
+    recall = tp / frauds if frauds else math.nan
+    summary.update(precision=precision, recall=recall, frauds=frauds, alerts=alerts)
+    checks = [
+        below_floor("precision", tp, alerts, t.min_precision),
+        below_floor("recall", tp, frauds, t.min_recall),
+    ]
     summary["pattern_recall"] = {}
     for name, floor in t.pattern_recall.items():
         mask = (df["fraud_type"] == name).to_numpy()
         if mask.sum() < t.min_pattern_examples:
             continue
-        r = float(pred[mask].mean())
-        summary["pattern_recall"][name] = r
-        if r < floor:
-            failures.append(f"recall on {name} {r:.3f} < {floor}")
+        caught = int(pred[mask].sum())
+        summary["pattern_recall"][name] = caught / int(mask.sum())
+        checks.append(below_floor(f"recall on {name}", caught, int(mask.sum()), floor))
+    failures += [c for c in checks if c]
     summary["psi"] = {}
     for name, spec in reference.items():
         value = psi(df[name].astype(float).to_numpy(), spec["edges"], spec["shares"])

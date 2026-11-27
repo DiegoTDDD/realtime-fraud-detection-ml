@@ -35,14 +35,21 @@ def test_a_healthy_window_passes():
 
 
 def test_low_recall_and_low_pattern_recall_fail():
-    failures, _ = monitor.evaluate(window(miss_every=4), REFERENCE, monitor.Thresholds())
-    assert any(f.startswith("recall 0.") for f in failures)
-    assert any("recall on high_amount" in f for f in failures)
+    failures, _ = monitor.evaluate(window(miss_every=2), REFERENCE, monitor.Thresholds())
+    assert any(f.startswith("recall 0.500 < 0.9") for f in failures)
+    assert any(f.startswith("recall on high_amount 0.500") for f in failures)
 
 
 def test_false_alarms_fail_precision():
     failures, _ = monitor.evaluate(window(false_alarms=20), REFERENCE, monitor.Thresholds())
-    assert failures == ["precision 0.714 < 0.9"]
+    assert failures == ["precision 0.714 < 0.9 (95% upper bound 0.807, n=70)"]
+
+
+def test_a_small_shortfall_on_few_examples_is_not_an_alarm():
+    # 8 of 10 caught is 80%, but a model with 97% recall misses 2 of 10 about 3% of the time
+    assert monitor.below_floor("recall", 8, 10, 0.9) is None
+    assert monitor.below_floor("recall", 40, 100, 0.9).startswith("recall 0.400 < 0.9")
+    assert abs(monitor.wilson_upper(8, 10) - 0.9433) < 1e-3
 
 
 def test_a_shifted_feature_is_named_as_drift():
