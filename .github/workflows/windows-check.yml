@@ -37,6 +37,15 @@ jobs:
           repository: DiegoTDDD/realtime-fraud-streaming
           path: streaming
 
+      # Spark downloads the Kafka and Delta jars from Maven on first start; caching them keeps a
+      # Maven hiccup from failing the run.
+      - name: Cache the Spark jars (Maven via Ivy)
+        uses: actions/cache@v4
+        with:
+          path: ~/.ivy2
+          key: ivy-windows-spark-3.5.8-delta-3.3.2-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: ivy-windows-spark-3.5.8-delta-3.3.2-
+
       - uses: conda-incubator/setup-miniconda@v3
         with:
           auto-activate-base: false
