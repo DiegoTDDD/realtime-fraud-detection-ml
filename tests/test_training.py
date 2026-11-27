@@ -27,17 +27,26 @@ def test_card_testing_starts_a_burst_on_the_same_card():
 
 
 def test_home_city_comes_from_the_training_period_only():
-    # 16 rows, so the 80% split puts the first 12 in training and the 4 Manaus rows in testing.
-    # Over all rows A would be a Recife/Manaus tie, which resolves to Manaus.
+    # 20 rows: the 60/20/20 split puts the first 12 in training and the 8 Manaus rows in
+    # validation and test. Over all rows A would be mostly Manaus.
     rows = [tx(f"C{i}", i) for i in range(8)]
     rows += [tx("A", 100 + i, "Recife") for i in range(4)]
-    rows += [tx("A", 1000 + i, "Manaus") for i in range(4)]
-    _, _, _, home = train_model.prepare(pd.DataFrame(rows))
+    rows += [tx("A", 1000 + i, "Manaus") for i in range(8)]
+    _, _, _, _, home = train_model.prepare(pd.DataFrame(rows))
     assert home["A"] == "Recife"
 
 
+def test_the_reference_distribution_has_a_share_per_bin(generated):
+    train_df, _, _, _, _ = train_model.prepare(generated)
+    ref = train_model.reference_distribution(train_df)
+    assert set(ref) == set(train_model.MONITORED_FEATURES)
+    for spec in ref.values():
+        assert len(spec["shares"]) == len(spec["edges"]) + 1
+        assert abs(sum(spec["shares"]) - 1) < 1e-9
+
+
 def test_train_produces_probabilities(generated):
-    train_df, test_df, cols, _ = train_model.prepare(generated)
+    train_df, _, test_df, cols, _ = train_model.prepare(generated)
     model, weight = train_model.train(train_df, cols)
     assert weight > 1  # fraud is the minority class
     proba = model.predict_proba(test_df[cols])[:, 1]

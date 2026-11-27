@@ -4,7 +4,8 @@ name: Windows check
 # Java 17, the Hadoop native binaries in C:\hadoop\bin, model training, the producer from the sibling
 # realtime-fraud-streaming repo and the Spark scoring job (which starts a Python worker process, the part
 # that is specific to Windows). A GitHub Windows machine cannot run Linux containers, so the broker here is
-# Apache Kafka (same protocol as Redpanda, same port 19092). Runs when this file changes, every month and on demand.
+# Apache Kafka (same protocol as Redpanda, same port 19092) and the schema registry is Confluent's community
+# Schema Registry (the API Redpanda's built-in registry implements, port 8081). Runs when this file changes, every month and on demand.
 on:
   workflow_dispatch:
   schedule:
@@ -12,6 +13,8 @@ on:
   push:
     paths:
       - ".github/workflows/windows-check.yml"
+      - "scoring/score_stream.py"
+      - "scoring/velocity_state.py"
 
 permissions:
   contents: read
@@ -51,7 +54,7 @@ jobs:
           cd ml
           pip install -r requirements.txt
           # the README uses a second environment for the producer; here it shares this one to save time
-          pip install confluent-kafka==2.5.3 faker==30.3.0
+          pip install "confluent-kafka[json,schemaregistry]==2.5.3" faker==30.3.0
 
       - name: "README, Windows only: Hadoop native binaries in C:\\hadoop\\bin"
         run: |
@@ -138,6 +141,40 @@ jobs:
           java -cp "$K/libs/*" org.apache.kafka.tools.TopicCommand --bootstrap-server localhost:19092 --describe --topic transactions | tee /c/topic.txt
           grep -q "PartitionCount: 3\|PartitionCount:3" /c/topic.txt
 
+      - name: "README step 3b (adapted): start a schema registry on port 8081 and register the schema"
+        run: |
+          conda activate fraud-ml
+          cd streaming
+          dl() {
+            curl -fsSL --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 -o sr.tgz "$1" \
+              && [ "$(stat -c %s sr.tgz)" -gt 50000000 ]
+          }
+          dl https://packages.confluent.io/archive/7.7/confluent-community-7.7.1.tar.gz \
+            || { echo "::error::could not download the Confluent community package"; exit 1; }
+          mkdir -p /c/sr
+          # Some jars are symlinks into other folders of share/java. Git Bash's tar turns a symlink into a copy,
+          # which fails when the target is not extracted yet, so extract twice: the first pass
+          # creates the targets, the second the copies.
+          parts=("*/share/java/*")
+          tar -xzf sr.tgz -C /c/sr --strip-components=1 --wildcards "${parts[@]}" 2>/dev/null || true
+          tar -xzf sr.tgz -C /c/sr --strip-components=1 --wildcards "${parts[@]}"
+          cat > /c/sr/sr.properties <<'PROPS'
+          listeners=http://0.0.0.0:8081
+          kafkastore.bootstrap.servers=PLAINTEXT://localhost:19092
+          kafkastore.topic=_schemas
+          kafkastore.topic.replication.factor=1
+          PROPS
+          S=C:/sr/share/java
+          # Java is called directly, for the same reasons as Kafka above.
+          nohup java -Xmx512M -cp "$S/schema-registry/*;$S/confluent-common/*;$S/rest-utils/*;$S/kafka-rest-lib/*" \
+            io.confluent.kafka.schemaregistry.rest.SchemaRegistryMain C:/sr/sr.properties > /c/sr.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8081/subjects >/dev/null; then echo "registry up after about $((i*3))s"; break; fi
+            sleep 3
+          done
+          curl -sf http://127.0.0.1:8081/subjects || { echo "::error::schema registry did not start: $(tail -20 /c/sr.log | tr -d '\r' | tr '\n' '|' | cut -c1-1200)"; exit 1; }
+          python contract/registry.py register
+
       - name: "README step 5: python producer/producer.py (from the realtime-fraud-streaming repo)"
         run: |
           conda activate fraud-ml
@@ -158,25 +195,21 @@ jobs:
           conda activate fraud-ml
           cd ml
           python - <<'PY'
-          import glob, subprocess, sys, time
-          def rows(path):
-              n = 0
-              for f in glob.glob(path + "/*.parquet"):
-                  r = subprocess.run([sys.executable, "-c",
-                                      "import pyarrow.parquet as pq, sys; print(pq.read_metadata(sys.argv[1]).num_rows)", f],
-                                     capture_output=True, text=True)
-                  if r.returncode == 0:
-                      n += int(r.stdout.strip())
-              return n
+          import sys, time
+          from deltalake import DeltaTable
+          def rows():
+              try:
+                  return len(DeltaTable("data/predictions").to_pyarrow_dataset().to_table(columns=["kafka_offset"]))
+              except Exception:
+                  return 0
           start = time.time()
           while time.time() - start < 600:
-              n = rows("data/predictions")
-              if n >= 100:
-                  print(f"predictions: {n} rows after {int(time.time() - start)}s")
+              if rows() >= 100:
+                  print(f"predictions: {rows()} rows after {int(time.time() - start)}s")
                   break
               time.sleep(5)
           else:
-              print(f"::error::only {rows('data/predictions')} prediction rows after 600s")
+              print(f"::error::only {rows()} prediction rows after 600s")
               sys.exit(1)
           PY
 
@@ -188,19 +221,16 @@ jobs:
           sleep 5
           cd ml
           python - <<'PY'
-          import glob, sys
-          import pandas as pd
-          parts = []
-          for f in sorted(glob.glob("data/predictions/*.parquet")):
-              try:
-                  parts.append(pd.read_parquet(f))
-              except Exception:
-                  pass
-          p = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+          import sys
+          from deltalake import DeltaTable
+          p = DeltaTable("data/predictions").to_pandas()
           print("prediction rows:", len(p), "| columns:", list(p.columns))
-          need = {"fraud_probability", "predicted_fraud", "is_fraud"}
+          need = {"fraud_probability", "predicted_fraud", "is_fraud", "tx_count_last_5min", "kafka_offset"}
           if not need <= set(p.columns) or len(p) < 100 or not p["fraud_probability"].between(0, 1).all():
               print("::error::unexpected predictions")
+              sys.exit(1)
+          if not p["transaction_id"].is_unique:
+              print("::error::a transaction was scored twice")
               sys.exit(1)
           print("Windows scoring output ok")
           PY
@@ -213,6 +243,7 @@ jobs:
           tail -40 scoring.log || true
           tail -20 producer.log || true
           tail -40 /c/kafka.log || true
+          tail -20 /c/sr.log || true
 
       - name: Keep the monthly schedule enabled
         if: ${{ always() && github.event_name == 'schedule' }}

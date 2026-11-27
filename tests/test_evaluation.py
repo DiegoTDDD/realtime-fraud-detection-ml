@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from conftest import tx
-from evaluation import chronological_split, recall_by_fraud_type, select_threshold
+from evaluation import chronological_split, recall_by_fraud_type, select_threshold, three_way_split
 
 
 def scored(groups):
@@ -75,3 +75,17 @@ def test_falls_back_to_best_f1_when_the_floor_is_unreachable():
     choice = select_threshold(y, s, t)
     assert not choice.met_precision_floor
     assert choice.threshold == pytest.approx(0.8)
+
+
+def test_three_way_split_is_train_then_validation_then_test():
+    df = pd.DataFrame([tx("A", s) for s in [9, 3, 7, 1, 5, 0, 8, 2, 6, 4]])
+    train, val, test = three_way_split(df)
+    assert len(train) == 6 and len(val) == 2 and len(test) == 2
+    assert train["timestamp"].max() < val["timestamp"].min()
+    assert val["timestamp"].max() < test["timestamp"].min()
+
+
+@pytest.mark.parametrize(("val", "test"), [(0, 0.2), (0.2, 0), (0.5, 0.5)])
+def test_three_way_split_rejects_invalid_fractions(val, test):
+    with pytest.raises(ValueError):
+        three_way_split(pd.DataFrame([tx("A", 1)]), val, test)

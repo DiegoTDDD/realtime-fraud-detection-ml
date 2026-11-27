@@ -11,7 +11,8 @@ authors = [{ name = "Diego Alves" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not spark'"
+markers = ["spark: needs Java and Spark; run with -m spark"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]

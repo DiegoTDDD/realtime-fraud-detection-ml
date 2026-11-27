@@ -1,5 +1,8 @@
 # Spark Structured Streaming (same version as Project 1, for compatibility with the shared Redpanda topic)
 pyspark==3.5.8
+# Delta Lake: the predictions table (Spark writes it, the monitor and dashboard read it)
+delta-spark==3.3.2
+deltalake==1.6.6
 
 # Model training and evaluation
 scikit-learn==1.5.2

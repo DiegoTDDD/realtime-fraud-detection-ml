@@ -43,6 +43,20 @@ def chronological_split(
     return ordered.iloc[:cut], ordered.iloc[cut:]
 
 
+def three_way_split(
+    df: pd.DataFrame, val_frac: float = 0.2, test_frac: float = 0.2, time_col: str = "timestamp"
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Earliest rows for training, the next val_frac to choose the threshold, the latest
+    test_frac to report (ADR 0007). The test period is never used to make a choice."""
+    if val_frac <= 0 or test_frac <= 0 or val_frac + test_frac >= 1:
+        raise ValueError("val_frac and test_frac must be positive and leave rows for training")
+    ordered = df.sort_values(time_col, kind="stable").reset_index(drop=True)
+    n = len(ordered)
+    train_end = int(n * (1 - val_frac - test_frac))
+    val_end = int(n * (1 - test_frac))
+    return ordered.iloc[:train_end], ordered.iloc[train_end:val_end], ordered.iloc[val_end:]
+
+
 def recall_by_fraud_type(
     fraud_type: pd.Series | Sequence[str | None],
     y_pred: np.ndarray | Sequence[int],

@@ -10,6 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "training"))
+sys.path.insert(0, str(ROOT / "scoring"))
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 

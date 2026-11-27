@@ -5,7 +5,7 @@ deployed dashboard.
 Streamlit Community Cloud runs neither Docker, Spark, nor a local Redpanda
 broker -- it only executes plain Python against files already in the repo.
 Mirroring Project 1's approach (data/gold_sample/windows.parquet), this
-script reads the full local data/predictions/ (gitignored, can be large)
+script reads the full local data/predictions Delta table (gitignored, can be large)
 and writes a small, representative sample to data/predictions_sample/,
 which IS committed to the repo. dashboard/app.py falls back to this sample
 whenever the live predictions folder is empty or missing.
@@ -18,6 +18,7 @@ import logging
 import os
 
 import pandas as pd
+from deltalake import DeltaTable
 
 log = logging.getLogger(__name__)
 
@@ -31,14 +32,14 @@ MAX_ROWS = 8000  # small enough to commit to git, large enough to fill the chart
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    if not os.path.isdir(PREDICTIONS_DIR):
+    if not os.path.isdir(os.path.join(PREDICTIONS_DIR, "_delta_log")):
         log.warning(
             "No predictions found at %s. Run the scoring pipeline first (see README).",
             PREDICTIONS_DIR,
         )
         return
 
-    df = pd.read_parquet(PREDICTIONS_DIR)
+    df = DeltaTable(PREDICTIONS_DIR).to_pandas()
     df = df.drop_duplicates(subset=["transaction_id"]).sort_values("event_time")
     log.info("Loaded %s scored transactions.", f"{len(df):,}")
 

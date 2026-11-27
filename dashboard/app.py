@@ -13,7 +13,7 @@ ground-truth fraud labels into every simulated transaction -- most
 real-time fraud dashboards can't show live accuracy, because they don't
 have an oracle to check predictions against.
 
-Local runs read the live data/predictions/ folder written by the scoring
+Local runs read the live data/predictions Delta table written by the scoring
 job. When deployed (e.g. Streamlit Community Cloud, which runs neither
 Spark nor Docker), it falls back to a small versioned sample at
 data/predictions_sample/predictions_sample.parquet -- see
@@ -23,7 +23,6 @@ Run (inside the `fraud-ml` conda env):
     streamlit run dashboard/app.py
 """
 
-import glob
 import json
 import os
 import time
@@ -96,18 +95,13 @@ st.markdown(
 
 @st.cache_data(ttl=5)
 def load_predictions() -> tuple:
-    # Local: read the full predictions folder written by score_stream.py.
+    # Local: read the Delta table written by score_stream.py.
     # Deploy (no Spark/Kafka running): fall back to the small versioned sample.
-    files = glob.glob(os.path.join(PREDICTIONS_DIR, "*.parquet"))
-    if files:
-        frames = []
-        for f in files:
-            try:
-                frames.append(pd.read_parquet(f))
-            except Exception:
-                continue
-        if frames:
-            df = pd.concat(frames, ignore_index=True)
+    if os.path.isdir(os.path.join(PREDICTIONS_DIR, "_delta_log")):
+        from deltalake import DeltaTable  # only needed locally, not on the deployed dashboard
+
+        df = DeltaTable(PREDICTIONS_DIR).to_pandas()
+        if not df.empty:
             df = df.drop_duplicates(subset=["transaction_id"])
             return df.sort_values("event_time").reset_index(drop=True), "live"
 
@@ -185,12 +179,14 @@ c1, c2, c3, c4, c5 = st.columns(5)
 kpi(c1, "Transactions scored", f"{len(df):,}")
 kpi(c2, "Alerts raised", f"{int(df['predicted_fraud'].sum()):,}", "warn")
 kpi(
-    c3, f"Precision (last {ROLLING_WINDOW_MINUTES}m)",
+    c3,
+    f"Precision (last {ROLLING_WINDOW_MINUTES}m)",
     f"{precision_roll:.1%}" if precision_roll is not None else "—",
     "good" if (precision_roll or 0) >= 0.9 else "alert",
 )
 kpi(
-    c4, f"Recall (last {ROLLING_WINDOW_MINUTES}m)",
+    c4,
+    f"Recall (last {ROLLING_WINDOW_MINUTES}m)",
     f"{recall_roll:.1%}" if recall_roll is not None else "—",
     "good" if (recall_roll or 0) >= 0.8 else "warn",
 )
@@ -199,7 +195,9 @@ kpi(c5, "False positives / negatives", f"{fp_roll} / {fn_roll}", "alert" if fn_r
 st.caption(
     f"Rolling window: last {ROLLING_WINDOW_MINUTES} min of transaction "
     f"time · Overall so far: precision {precision_all:.1%} · recall "
-    f"{recall_all:.1%}" if precision_all is not None and recall_all is not None else ""
+    f"{recall_all:.1%}"
+    if precision_all is not None and recall_all is not None
+    else ""
 )
 
 st.markdown("<div style='height:1.4rem'></div>", unsafe_allow_html=True)
@@ -214,24 +212,51 @@ threshold = offline_metrics.get("threshold", 0.5)
 prob_fig = go.Figure()
 legit = df[~df["is_fraud"]]
 fraud = df[df["is_fraud"]]
-prob_fig.add_trace(go.Scattergl(
-    x=legit["event_time"], y=legit["fraud_probability"], mode="markers",
-    marker=dict(size=4, color=BLUE, opacity=0.4), name="Legitimate",
-))
-prob_fig.add_trace(go.Scattergl(
-    x=fraud["event_time"], y=fraud["fraud_probability"], mode="markers",
-    marker=dict(size=6, color=RED, opacity=0.85), name="Actual fraud",
-))
-prob_fig.add_hline(y=threshold, line_dash="dash", line_color=AMBER,
-                    annotation_text=f"Alert threshold ({threshold:.3f})",
-                    annotation_font_color=AMBER)
-prob_fig.update_layout(
-    height=340, paper_bgcolor=PANEL, plot_bgcolor=PANEL,
-    margin=dict(l=10, r=10, t=10, b=10), font=dict(color=TEXT),
-    xaxis=dict(gridcolor=GRID), yaxis=dict(gridcolor=GRID, range=[0, 1]),
-    legend=dict(orientation="h", y=1.1, x=0, bgcolor="rgba(0,0,0,0)", borderwidth=0, font=dict(color=TEXT, size=13)),
+prob_fig.add_trace(
+    go.Scattergl(
+        x=legit["event_time"],
+        y=legit["fraud_probability"],
+        mode="markers",
+        marker=dict(size=4, color=BLUE, opacity=0.4),
+        name="Legitimate",
+    )
 )
-st.plotly_chart(prob_fig, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False})
+prob_fig.add_trace(
+    go.Scattergl(
+        x=fraud["event_time"],
+        y=fraud["fraud_probability"],
+        mode="markers",
+        marker=dict(size=6, color=RED, opacity=0.85),
+        name="Actual fraud",
+    )
+)
+prob_fig.add_hline(
+    y=threshold,
+    line_dash="dash",
+    line_color=AMBER,
+    annotation_text=f"Alert threshold ({threshold:.3f})",
+    annotation_font_color=AMBER,
+)
+prob_fig.update_layout(
+    height=340,
+    paper_bgcolor=PANEL,
+    plot_bgcolor=PANEL,
+    margin=dict(l=10, r=10, t=10, b=10),
+    font=dict(color=TEXT),
+    xaxis=dict(gridcolor=GRID),
+    yaxis=dict(gridcolor=GRID, range=[0, 1]),
+    legend=dict(
+        orientation="h",
+        y=1.1,
+        x=0,
+        bgcolor="rgba(0,0,0,0)",
+        borderwidth=0,
+        font=dict(color=TEXT, size=13),
+    ),
+)
+st.plotly_chart(
+    prob_fig, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False}
+)
 
 # ---------------------------------------------------------------------------
 # Recall by fraud type -- proves the model catches all 3 patterns live,
@@ -245,27 +270,51 @@ fraud_only = df[df["is_fraud"]]
 live_recall_by_type = {}
 for ftype in ["high_amount", "card_testing", "impossible_travel"]:
     subset = fraud_only[fraud_only["fraud_type"] == ftype]
-    live_recall_by_type[ftype] = float(subset["predicted_fraud"].mean()) if len(subset) > 0 else None
+    live_recall_by_type[ftype] = (
+        float(subset["predicted_fraud"].mean()) if len(subset) > 0 else None
+    )
 
 offline_recall_by_type = offline_metrics.get("recall_by_fraud_type", {})
 
 type_fig = go.Figure()
 labels = ["high_amount", "card_testing", "impossible_travel"]
-type_fig.add_trace(go.Bar(
-    x=labels, y=[offline_recall_by_type.get(t) for t in labels],
-    name="Offline (training test set)", marker_color=MUTED,
-))
-type_fig.add_trace(go.Bar(
-    x=labels, y=[live_recall_by_type.get(t) for t in labels],
-    name="Live (this stream)", marker_color=GREEN,
-))
-type_fig.update_layout(
-    barmode="group", height=300, paper_bgcolor=PANEL, plot_bgcolor=PANEL,
-    margin=dict(l=10, r=10, t=10, b=10), font=dict(color=TEXT),
-    xaxis=dict(gridcolor=GRID), yaxis=dict(gridcolor=GRID, range=[0, 1]),
-    legend=dict(orientation="h", y=1.15, x=0, bgcolor="rgba(0,0,0,0)", borderwidth=0, font=dict(color=TEXT, size=13)),
+type_fig.add_trace(
+    go.Bar(
+        x=labels,
+        y=[offline_recall_by_type.get(t) for t in labels],
+        name="Offline (training test set)",
+        marker_color=MUTED,
+    )
 )
-st.plotly_chart(type_fig, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False})
+type_fig.add_trace(
+    go.Bar(
+        x=labels,
+        y=[live_recall_by_type.get(t) for t in labels],
+        name="Live (this stream)",
+        marker_color=GREEN,
+    )
+)
+type_fig.update_layout(
+    barmode="group",
+    height=300,
+    paper_bgcolor=PANEL,
+    plot_bgcolor=PANEL,
+    margin=dict(l=10, r=10, t=10, b=10),
+    font=dict(color=TEXT),
+    xaxis=dict(gridcolor=GRID),
+    yaxis=dict(gridcolor=GRID, range=[0, 1]),
+    legend=dict(
+        orientation="h",
+        y=1.15,
+        x=0,
+        bgcolor="rgba(0,0,0,0)",
+        borderwidth=0,
+        font=dict(color=TEXT, size=13),
+    ),
+)
+st.plotly_chart(
+    type_fig, use_container_width=True, config={"scrollZoom": False, "displayModeBar": False}
+)
 st.caption(
     "Live recall on a short-running local demo is noisy (few examples per "
     "type) -- shown alongside the offline test-set numbers for context, not "
@@ -284,19 +333,34 @@ alerts["Correct"] = alerts["is_fraud"].map(lambda x: "✅" if x else "❌")
 alerts["fraud_probability"] = alerts["fraud_probability"].round(3)
 alerts["amount"] = alerts["amount"].round(2)
 
-show_alerts = alerts[[
-    "event_time", "card_id", "amount", "category", "city",
-    "fraud_probability", "fraud_type", "Correct",
-]].rename(columns={
-    "event_time": "Time", "card_id": "Card", "amount": "Amount $",
-    "category": "Category", "city": "City",
-    "fraud_probability": "Score", "fraud_type": "Actual type",
-})
+show_alerts = alerts[
+    [
+        "event_time",
+        "card_id",
+        "amount",
+        "category",
+        "city",
+        "fraud_probability",
+        "fraud_type",
+        "Correct",
+    ]
+].rename(
+    columns={
+        "event_time": "Time",
+        "card_id": "Card",
+        "amount": "Amount $",
+        "category": "Category",
+        "city": "City",
+        "fraud_probability": "Score",
+        "fraud_type": "Actual type",
+    }
+)
 show_alerts["Actual type"] = show_alerts["Actual type"].fillna("— (false positive)")
 
 st.dataframe(
     show_alerts.style.format({"Amount $": "${:,.2f}", "Score": "{:.3f}"}),
-    use_container_width=True, hide_index=True,
+    use_container_width=True,
+    hide_index=True,
 )
 
 st.caption(

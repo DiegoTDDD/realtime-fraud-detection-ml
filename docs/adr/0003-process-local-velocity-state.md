@@ -1,6 +1,6 @@
 # 0003. Keep per-card velocity state in the scoring process
 
-**Status:** Accepted, with a stated limit
+**Status:** Superseded by [ADR 0008](0008-spark-state-and-idempotent-delta-sink.md)
 
 ## Context
 `tx_count_last_5min` and `time_since_last_tx` need each card's recent history, which spans several micro-batches. The scoring job uses `foreachBatch` with a pandas model call, so Spark's own stateful operators would not hold this state.

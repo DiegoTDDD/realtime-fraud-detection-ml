@@ -19,7 +19,7 @@ Features, and the fraud pattern each one targets:
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,9 @@ FEATURE_COLUMNS = [
 CATEGORY_COL = "category"  # one-hot encoded separately
 VELOCITY_WINDOW_S = 300  # 5 minutes
 NO_RECENT_TX = 99999.0  # time_since_last_tx for a card's first transaction
+# A card idle this long counts as new: the streaming job drops its state after this much
+# inactivity (ADR 0008), so training caps the gap the same way to keep the two paths identical.
+STATE_TTL_S = 24 * 3600
 EARTH_RADIUS_KM = 6371
 
 # Public coordinates of the 10 cities used by the producer in realtime-fraud-streaming.
@@ -93,7 +96,7 @@ def add_velocity_features(df: pd.DataFrame) -> pd.DataFrame:
             while times[i] - times[left] > VELOCITY_WINDOW_S:
                 left += 1
             tx_count[idx[i]] = i - left
-            if i > 0:
+            if i > 0 and times[i] - times[i - 1] <= STATE_TTL_S:
                 time_since_last[idx[i]] = times[i] - times[i - 1]
 
     df["tx_count_last_5min"] = tx_count
@@ -154,26 +157,64 @@ def build_features(
 # --------------------------------------------------------------------------- streaming (serving)
 
 
-class CardHistory:
-    """Recent transaction times per card, kept across micro-batches.
+def velocity_for_card(
+    epoch_seconds: Sequence[int], window: Sequence[int], last: int | None
+) -> tuple[list[int], list[float], list[int], int | None]:
+    """Velocity features for one card's new transactions, in order, given its state.
 
-    Process-local: correct only while the scoring job runs as a single process
-    (see ADR 0003). A multi-worker deployment would keep this in a shared state
-    store such as Redis or Spark's stateful operators.
+    The state is `window`, the card's earlier transaction times (seconds) still inside the
+    5-minute window, and `last`, the time of its previous transaction (which can be older than
+    the window). Returns tx_count_last_5min and time_since_last_tx per new transaction, and the
+    new state. The streaming job keeps this state per card in Spark's state store (ADR 0008);
+    add_velocity_features is the batch version, and the tests check that the two agree.
+    """
+    times = deque(window)
+    counts: list[int] = []
+    since: list[float] = []
+    for t in epoch_seconds:
+        t = int(t)
+        while times and t - times[0] > VELOCITY_WINDOW_S:
+            times.popleft()
+        counts.append(len(times))
+        gap = None if last is None else t - last
+        since.append(float(gap) if gap is not None and gap <= STATE_TTL_S else NO_RECENT_TX)
+        times.append(t)
+        last = t
+    return counts, since, list(times), last
+
+
+class CardHistory:
+    """Recent transaction times per card in a dict: velocity_for_card applied card by card.
+
+    Used by tests and quick local checks. The streaming job keeps the same history per card in
+    Spark's state store instead, so it survives restarts and is spread across workers (ADR 0008).
     """
 
     def __init__(self) -> None:
-        self._times: dict[str, deque[int]] = {}
+        self._state: dict[str, tuple[list[int], int | None]] = {}
 
     def update(self, card_id: str, epoch_s: int) -> tuple[int, float]:
         """Record a transaction; return (tx_count_last_5min, time_since_last_tx)."""
-        history = self._times.setdefault(card_id, deque())
-        while history and epoch_s - history[0] > VELOCITY_WINDOW_S:
-            history.popleft()
-        count = len(history)
-        since_last = float(epoch_s - history[-1]) if history else NO_RECENT_TX
-        history.append(epoch_s)
-        return count, since_last
+        window, last = self._state.get(card_id, ([], None))
+        counts, since, window, last = velocity_for_card([epoch_s], window, last)
+        self._state[card_id] = (window, last)
+        return counts[0], since[0]
+
+
+def add_stream_features(
+    pdf: pd.DataFrame,
+    home_city: Mapping[str, str],
+    feature_cols: list[str],
+    time_col: str = "event_time",
+) -> pd.DataFrame:
+    """The features that need no history: hour, distance from home, category columns.
+
+    The velocity columns must already be present (from the state store, or featurize_batch).
+    """
+    pdf = pdf.copy()
+    pdf["hour_of_day"] = pd.to_datetime(pdf[time_col], format="ISO8601").dt.hour
+    pdf = add_distance_feature(pdf, home_city)
+    return add_category_columns(pdf, feature_cols)
 
 
 def featurize_batch(
@@ -183,7 +224,7 @@ def featurize_batch(
     feature_cols: list[str],
     time_col: str = "event_time",
 ) -> pd.DataFrame:
-    """Streaming features for one micro-batch, in arrival order.
+    """Streaming features for one micro-batch with an in-memory history, in arrival order.
 
     Returns the batch sorted by time with every column in feature_cols present.
     """
@@ -194,6 +235,4 @@ def featurize_batch(
     ]
     pdf["tx_count_last_5min"] = [count for count, _ in velocity]
     pdf["time_since_last_tx"] = [since for _, since in velocity]
-    pdf["hour_of_day"] = pd.to_datetime(pdf[time_col], format="ISO8601").dt.hour
-    pdf = add_distance_feature(pdf, home_city)
-    return add_category_columns(pdf, feature_cols)
+    return add_stream_features(pdf, home_city, feature_cols, time_col)
