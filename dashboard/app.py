@@ -322,13 +322,14 @@ st.caption(
 )
 
 # ---------------------------------------------------------------------------
-# Alerts feed -- only flagged transactions, ranked by probability, with a
+# Alerts feed -- the latest flagged transactions, newest first, with a
 # correct/incorrect indicator against ground truth.
 # ---------------------------------------------------------------------------
 st.markdown('<div class="eyebrow">Alerts</div>', unsafe_allow_html=True)
 st.markdown("### Flagged transactions")
 
-alerts = df[df["predicted_fraud"]].sort_values("fraud_probability", ascending=False).head(25).copy()
+alerts = df[df["predicted_fraud"]].sort_values("event_time", ascending=False).head(25).copy()
+alerts["event_time"] = pd.to_datetime(alerts["event_time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
 alerts["Correct"] = alerts["is_fraud"].map(lambda x: "✅" if x else "❌")
 alerts["fraud_probability"] = alerts["fraud_probability"].round(3)
 alerts["amount"] = alerts["amount"].round(2)
@@ -359,13 +360,13 @@ show_alerts["Actual type"] = show_alerts["Actual type"].fillna("— (false posit
 
 st.dataframe(
     show_alerts.style.format({"Amount $": "${:,.2f}", "Score": "{:.3f}"}),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
 st.caption(
     f"{len(df):,} transactions scored · pipeline: producer → Redpanda → "
-    f"Spark Structured Streaming (foreachBatch) → XGBoost → Parquet → this dashboard",
+    f"Spark Structured Streaming (per-card state store) → XGBoost → Delta Lake → this dashboard",
 )
 
 if auto:

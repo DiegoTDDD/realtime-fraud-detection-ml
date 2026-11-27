@@ -17,7 +17,6 @@ Usage (after running the full local pipeline for a while):
 import logging
 import os
 
-import pandas as pd
 from deltalake import DeltaTable
 
 log = logging.getLogger(__name__)
@@ -44,16 +43,11 @@ def main() -> None:
     log.info("Loaded %s scored transactions.", f"{len(df):,}")
 
     if len(df) > MAX_ROWS:
-        # Keep every flagged transaction (alerts are the interesting part of
-        # the dashboard) plus a random sample of the rest, up to MAX_ROWS.
-        alerts = df[df["predicted_fraud"]]
-        rest = df[~df["predicted_fraud"]]
-        remaining_budget = max(MAX_ROWS - len(alerts), 0)
-        rest_sample = rest.sample(n=min(remaining_budget, len(rest)), random_state=42)
-        df = pd.concat([alerts, rest_sample]).sort_values("event_time")
-        log.info(
-            "Sampled down to %s rows (%s alerts kept in full).", f"{len(df):,}", f"{len(alerts):,}"
-        )
+        # The latest MAX_ROWS transactions, contiguous in time. Keeping every alert and
+        # sampling the rest would drop missed frauds more often than caught ones and
+        # overstate the dashboard's live recall.
+        df = df.tail(MAX_ROWS)
+        log.info("Kept the latest %s transactions.", f"{len(df):,}")
 
     os.makedirs(SAMPLE_DIR, exist_ok=True)
     df.to_parquet(SAMPLE_PATH, index=False)
