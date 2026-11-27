@@ -6,12 +6,12 @@
 7.5% of rows are fraud. Accuracy is meaningless at that balance: predicting "never fraud" scores 92.5%.
 
 ## Decision
-Train XGBoost with `scale_pos_weight` = negatives ÷ positives (12.17), and report PR-AUC plus precision and recall at the chosen threshold, broken down by pattern.
+Train XGBoost with `scale_pos_weight` = negatives ÷ positives in the training period (12.13 since the 60/20/20 split of ADR 0007; 12.17 with the earlier 80% training period), and report PR-AUC plus precision and recall at the chosen threshold, broken down by pattern.
 
 ## Alternatives considered
 - **SMOTE or undersampling.** Changes the data the model sees. Synthetic minority rows would also break the velocity features, which depend on real neighbouring transactions.
 - **ROC-AUC.** Looks good when negatives dominate, because the false-positive rate stays small even with many false alarms. PR-AUC reflects alert quality directly.
 
 ## Consequences
-- Training data keeps its real distribution, and probabilities rank well (PR-AUC 0.9925).
+- Training data keeps its real distribution, and probabilities rank well (PR-AUC 0.9918 on the test period).
 - The weighted model's probabilities are not calibrated. They rank transactions but are not frequencies, so the alert threshold has to be chosen explicitly ([0004](0004-threshold-policy.md)).

@@ -177,7 +177,7 @@ Streamlit Community Cloud runs plain Python only — no Docker, no Spark, no loc
    ```bash
    python scoring/export_sample.py
    ```
-   This writes `data/predictions_sample/predictions_sample.parquet` — capped at 8,000 rows, keeping every flagged transaction plus a random sample of the rest, so the alerts feed and precision/recall charts stay meaningful. Unlike `data/predictions/`, this sample file is **not** gitignored — it's meant to be committed.
+   This writes `data/predictions_sample/predictions_sample.parquet`: the latest 8,000 transactions, contiguous in time. Keeping every alert and sampling the rest would drop missed frauds more often than caught ones and overstate the live recall. Unlike `data/predictions/`, this sample file is **not** gitignored — it's meant to be committed.
 3. Commit and push it:
    ```bash
    git add data/predictions_sample/predictions_sample.parquet
@@ -189,7 +189,7 @@ Streamlit Community Cloud runs plain Python only — no Docker, no Spark, no loc
 
 1. On [share.streamlit.io](https://share.streamlit.io), create a new app from this repo, branch `master`, main file path `dashboard/app.py`.
 2. Set the app's dependency file to `dashboard/requirements.txt` (not the root `requirements.txt` — that one includes `pyspark` and `xgboost`, which the dashboard itself never imports and which would slow the build for no reason).
-3. Deploy. `dashboard/app.py` detects that `data/predictions/` is empty in the cloud environment and automatically falls back to the committed sample — no code changes needed between local and deployed runs.
+3. Deploy. `dashboard/app.py` finds no Delta table in `data/predictions/` in the cloud environment and falls back to the committed sample, so local and deployed runs use the same code.
 
 The deployed dashboard will show a caption noting it's reading the versioned sample rather than a live pipeline, exactly as Project 1's does.
 
@@ -210,12 +210,12 @@ The deployed dashboard will show a caption noting it's reading the versioned sam
 
 What the project shows:
 
-- **Applied ML on imbalanced data** — class weights (not resampling) for a ~2-7% fraud rate, PR-AUC as the primary metric, a documented threshold-selection strategy (macro-recall across fraud types under a precision floor, not a default 0.5 or aggregate F1)
-- **Feature engineering with a falsifiable process** — three iterations tested and measured against the held-out test set for the hardest fraud pattern, with the two rejected approaches documented alongside the reasoning for why they didn't work
+- **Applied ML on imbalanced data** — class weights (not resampling) for a ~7.5% fraud rate, PR-AUC as the primary metric, a documented threshold-selection strategy (macro-recall across fraud types under a precision floor, not a default 0.5 or aggregate F1)
+- **Feature engineering with a falsifiable process** — three designs for the hardest fraud pattern measured side by side, with the two rejected ones documented alongside the reasoning ([ADR 0002](docs/adr/0002-distance-feature.md))
 - **Streaming ML serving** — a trained model scoring Spark Structured Streaming micro-batches on the workers, with feature parity between training and serving enforced by tests
 - **Stateful, exactly-once streaming** — per-card state in Spark's state store and an idempotent Delta sink, proved by a Spark test that restarts the query and by a CI run that kills the job with SIGKILL and finds one prediction per Kafka message
 - **Model monitoring** — precision, recall, recall per pattern and PSI drift against thresholds, with exit code and webhook
-- **Real-world Windows/Spark debugging** — resolved five distinct infrastructure failures end-to-end (missing Hadoop native binaries, a non-persistent Kafka topic, Python worker spawn failures, schema-inference errors on null columns), each with a root-cause explanation, not just a fix
+- **Real-world Windows/Spark debugging** — resolved five distinct infrastructure failures end-to-end (missing Hadoop native binaries, a non-persistent Kafka topic, Python worker spawn failures, schema-inference errors on null columns, tools missing from an already-open shell's PATH), each with a root-cause explanation; the Windows check now runs the README steps on every relevant change
 - **ML-aware dashboarding** — live precision/recall (not just volume), because Project 1's injected ground-truth labels make this rare "self-grading" view possible
 
 ---
@@ -249,6 +249,7 @@ realtime-fraud-detection-ml/
 │   ├── velocity_state.py           # the per-card state function (applyInPandasWithState)
 │   ├── monitor.py                  # live precision, recall, per-pattern recall and drift
 │   └── export_sample.py            # small versioned sample for the deployed dashboard
+├── scripts/build_case_study.py      # writes docs/case_study.pdf from training/metrics.json
 ├── dashboard/
 │   ├── app.py                      # Streamlit model-quality dashboard
 │   └── requirements.txt            # light dependencies for the deployed dashboard
@@ -263,7 +264,7 @@ realtime-fraud-detection-ml/
 │   ├── model_card.md
 │   ├── adr/                        # architecture decision records
 │   ├── screenshots/
-│   └── case_study.pdf
+│   └── case_study.pdf              # rebuilt by scripts/build_case_study.py
 ├── .github/                        # CI: tests, pipeline, Windows, dashboard, security, app health
 ├── pyproject.toml                  # project metadata, pytest and ruff settings
 ├── requirements.txt                # full pipeline

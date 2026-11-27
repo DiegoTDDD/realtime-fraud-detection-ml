@@ -1,6 +1,6 @@
 # 0006. One feature module for training and serving; time-based split
 
-**Status:** Accepted; the 80/20 split is replaced by 60/20/20 in [ADR 0007](0007-validation-split-for-the-threshold.md). Replaces separate feature code in `train_model.py` and `score_stream.py`.
+**Status:** Accepted, with two later changes: the 80/20 split became 60/20/20 in [ADR 0007](0007-validation-split-for-the-threshold.md), and the scoring job's in-memory `CardHistory` became Spark's state store in [ADR 0008](0008-spark-state-and-idempotent-delta-sink.md), which runs the same shared window function. Replaces separate feature code in `train_model.py` and `score_stream.py`.
 
 ## Context
 Training and the scoring job each had their own copy of the feature code. The copies had drifted: training measured time in whole seconds, while serving used fractional seconds. A transaction 300.4 s after the previous one was inside the 5-minute window during training but outside it during serving. In addition, the home-city map was inferred from all rows, including the test period, so the test set leaked into a feature.
