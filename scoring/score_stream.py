@@ -71,6 +71,7 @@ KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:19092")
 TOPIC = "transactions"
 KAFKA_PKG = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.8"
 TRIGGER = "10 seconds"
+MAVEN_MIRROR = "https://maven-central.storage-download.googleapis.com/maven2/"
 JAVA_OPTIONS = (
     "--add-opens=java.base/java.nio=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true"
 )
@@ -103,6 +104,9 @@ def build_spark(
         )
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.sql.session.timeZone", "UTC")
+        # Maven Central has refused CI downloads of the Kafka and Delta jars; Google's mirror
+        # of Central is tried as well.
+        .config("spark.jars.repositories", MAVEN_MIRROR)
         # Processing-time timeouts would otherwise make Spark run an empty micro-batch after
         # every batch; idle cards are expired when the next data batch arrives instead.
         .config("spark.sql.streaming.noDataMicroBatches.enabled", "false")

@@ -55,6 +55,15 @@ jobs:
           pip install -r ml/requirements.txt "confluent-kafka[json,schemaregistry]==2.5.3" faker==30.3.0 pytest==9.2.0
           pip check
 
+      - name: Download the Spark jars (retried; cached for the next run)
+        working-directory: ml
+        run: |
+          for i in 1 2 3; do
+            python -c "import sys; sys.path.insert(0, 'scoring'); from score_stream import build_spark; build_spark('prefetch', master='local[1]').stop()" && exit 0
+            echo "jar download failed (attempt $i), retrying"; sleep 30
+          done
+          exit 1
+
       - name: Spark tests (state across a restart, idempotent writes, wire format)
         working-directory: ml
         run: pytest -m spark -q
