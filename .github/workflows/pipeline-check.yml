@@ -100,7 +100,7 @@ jobs:
         working-directory: ml
         run: |
           python - <<'PY'
-          import sys
+          import os, sys
           from confluent_kafka import Consumer, TopicPartition
           from deltalake import DeltaTable
 
@@ -116,6 +116,8 @@ jobs:
               print("::error::probability out of range"); sys.exit(1)
           bursts = p[p["fraud_type"] == "card_testing"]
           print("card_testing rows:", len(bursts), "max tx_count_last_5min:", bursts["tx_count_last_5min"].max())
+          sys.stdout.flush()
+          os._exit(0)  # deltalake's runtime threads can abort a normal interpreter exit
           PY
 
       - name: Model monitor passes on the live predictions
@@ -129,7 +131,8 @@ jobs:
           from streamlit.testing.v1 import AppTest
           at = AppTest.from_file("dashboard/app.py", default_timeout=120).run()
           assert not at.exception, [e.value for e in at.exception]
-          print("dashboard ok")
+          print("dashboard ok", flush=True)
+          import os; os._exit(0)  # deltalake's runtime threads can abort a normal interpreter exit
           PY
 
       - name: Show logs on failure

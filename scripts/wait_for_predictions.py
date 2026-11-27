@@ -4,6 +4,7 @@ Used by the pipeline check. Fails early if the scoring job has died.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -52,4 +53,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    sys.stdout.flush()
+    os._exit(code)  # deltalake's runtime threads can abort a normal interpreter exit

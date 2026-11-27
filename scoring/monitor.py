@@ -146,4 +146,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    logging.shutdown()
+    sys.stdout.flush()
+    # deltalake's background threads can abort a normal interpreter exit ("terminate called
+    # without an active exception"), which would turn a pass into exit code 134.
+    os._exit(code)

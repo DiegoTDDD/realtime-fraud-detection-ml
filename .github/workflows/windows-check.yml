@@ -195,7 +195,7 @@ jobs:
           conda activate fraud-ml
           cd ml
           python - <<'PY'
-          import sys, time
+          import os, sys, time
           from deltalake import DeltaTable
           def rows():
               try:
@@ -209,8 +209,10 @@ jobs:
                   break
               time.sleep(5)
           else:
-              print(f"::error::only {rows()} prediction rows after 600s")
-              sys.exit(1)
+              print(f"::error::only {rows()} prediction rows after 600s", flush=True)
+              os._exit(1)
+          sys.stdout.flush()
+          os._exit(0)  # deltalake's runtime threads can abort a normal interpreter exit
           PY
 
       - name: Stop Spark and the producer, then check the predictions
@@ -221,7 +223,7 @@ jobs:
           sleep 5
           cd ml
           python - <<'PY'
-          import sys
+          import os, sys
           from deltalake import DeltaTable
           p = DeltaTable("data/predictions").to_pandas()
           print("prediction rows:", len(p), "| columns:", list(p.columns))
@@ -232,7 +234,8 @@ jobs:
           if not p["transaction_id"].is_unique:
               print("::error::a transaction was scored twice")
               sys.exit(1)
-          print("Windows scoring output ok")
+          print("Windows scoring output ok", flush=True)
+          os._exit(0)
           PY
 
       - name: Show the logs on failure
